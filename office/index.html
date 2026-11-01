@@ -288,7 +288,7 @@ a { color: inherit; }
     },
     cand: function (raw) {
       return raw.map(function (r, i) {
-        return { name: clean(r["이름"]), field: clean(r["분야"]), org: clean(r["소속"]), status: clean(r["상태"]) || "후보", fit: num(r["적합도"]), why: clean(r["추천 이유"]), topics: clean(r["뽑을 수 있는 주제"]), proof: href(r["근거 링크"]), contact: clean(r["연락 경로"]), page: href(r.url), added: dayKey(r["date:추가일:start"] || ""), i: i };
+        return { name: clean(r["이름"]), field: clean(r["분야"]), org: clean(r["소속"]), status: clean(r["상태"]) || "후보", fit: num(r["적합도"]), why: clean(r["추천 이유"]), topics: clean(r["뽑을 수 있는 주제"]), proof: href(r["근거 링크"]), yt: href(r["유튜브 채널"]), subs: num(r["구독자"]), contact: clean(r["연락 경로"]), page: href(r.url), added: dayKey(r["date:추가일:start"] || ""), i: i };
       });
     },
     out: function (raw) {
@@ -452,11 +452,12 @@ a { color: inherit; }
       var fit = "";
       if (r.fit != null) { var f = Math.max(0, Math.min(5, Math.round(r.fit))); fit = '<span class="fit" title="적합도 ' + f + '/5">' + "●".repeat(f) + "<i>" + "●".repeat(5 - f) + "</i></span>"; }
       var links = [];
-      if (r.proof) links.push('<a href="' + esc(r.proof) + '" target="_blank" rel="noopener">근거 보기</a>');
+      if (r.yt) links.push('<a href="' + esc(r.yt) + '" target="_blank" rel="noopener">유튜브 채널</a>');
+      if (r.proof && r.proof !== r.yt) links.push('<a href="' + esc(r.proof) + '" target="_blank" rel="noopener">근거 보기</a>');
       if (r.page) links.push('<a href="' + esc(r.page) + '" target="_blank" rel="noopener">노션 카드</a>');
       if (r.contact) links.push("<span>연락: " + esc(r.contact) + "</span>");
       return '<li class="cand"><div class="row1"><span class="name">' + esc(r.name || "(이름 없음)") + "</span>" + (r.org ? '<span class="org">' + esc(r.org) + "</span>" : "") + fit + "</div>" +
-        '<div class="chips"><span class="chip st-' + esc(r.status) + '">' + esc(r.status) + "</span>" + (r.field ? '<span class="chip">' + esc(r.field) + "</span>" : "") + (r.added ? '<span class="chip">' + esc(shortDay(r.added)) + " 추가</span>" : "") + "</div>" +
+        '<div class="chips"><span class="chip st-' + esc(r.status) + '">' + esc(r.status) + "</span>" + (r.field ? '<span class="chip">' + esc(r.field) + "</span>" : "") + '<span class="chip">' + (r.subs != null ? "구독자 " + kNum(r.subs) : "구독자 확인 필요") + "</span>" + (r.added ? '<span class="chip">' + esc(shortDay(r.added)) + " 추가</span>" : "") + "</div>" +
         (r.why ? '<div class="why">' + esc(r.why) + "</div>" : "") +
         (r.topics ? '<div class="topics"><b>뽑을 주제</b>' + esc(r.topics) + "</div>" : "") +
         (links.length ? '<div class="links">' + links.join("") + "</div>" : "") + "</li>";
