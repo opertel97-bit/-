@@ -228,14 +228,15 @@ a { color: inherit; }
   "use strict";
   var SERVER = "Notion", TOOL = "notion-query-data-sources", REFRESH_MS = 120000;
   var SRC = {
-    log:  { url: "collection://b225ce1f-296d-4d27-b968-25bd6f5208ea", sort: "날짜" },
-    cand: { url: "collection://87e7ef2a-b03e-4aee-b932-2316a0b31b79", sort: "추가일" },
-    out:  { url: "collection://67f717ce-64c0-4bdf-81bc-8f376fb6b7bb", sort: "배수" },
-    shorts: { url: "collection://aa214cca-4fbc-4ba2-b012-41b84f28d91a", sort: "배수" }
+    log:  { url: "collection://b225ce1f-296d-4d27-b968-25bd6f5208ea", sort: "날짜", view: "https://www.notion.so/c76bf9ef2e434cc08ab11caba176ab36?v=53ef33381be44325ba9ad97d3750b2e6" },
+    cand: { url: "collection://87e7ef2a-b03e-4aee-b932-2316a0b31b79", sort: "추가일", view: "https://www.notion.so/3100b46040184fc5aff7d32eb3deb0a1?v=dd2fb8ecbea04bb4ad8f2642e4393dd3" },
+    out:  { url: "collection://67f717ce-64c0-4bdf-81bc-8f376fb6b7bb", sort: "배수", view: "https://www.notion.so/80b337db35314930b55d76c68befc8f1?v=aafd5e0487a74ec6b6ad669045a3651a" },
+    shorts: { url: "collection://aa214cca-4fbc-4ba2-b012-41b84f28d91a", sort: "배수", view: "https://www.notion.so/ce42a8f3e02843d093491846ae903706?v=8dc4a4a2145243a6a354e3065cca00ce" }
   };
   Object.keys(SRC).forEach(function (k) {
     var s = SRC[k];
-    s.input = { data: { mode: "rows", data_source_url: s.url, sort: [{ property: s.sort, direction: "descending" }], limit: 100 } };
+    // view 모드: 노션 무료 플랜의 조회 한도에 걸리지 않음. 정렬은 화면에서 한다
+    s.input = { data: { mode: "view", view_url: s.view, page_size: 100 } };
     s.rows = null; s.error = null; s.msg = ""; s.at = null; s.unsub = null;
   });
 
@@ -357,7 +358,7 @@ a { color: inherit; }
         { refetchInterval: REFRESH_MS, cache: { staleTime: 60000, gcTime: 600000 } });
     });
   }
-  var busy = false;
+  var busy = false, watching = false;
   function readNow() {
     if (!mcp || busy) return;
     busy = true; $("refresh").disabled = true; global.loading = true; renderStatus();
@@ -365,7 +366,7 @@ a { color: inherit; }
     Promise.all(ks.map(function (k) {
       return mcp.callTool(SERVER, TOOL, SRC[k].input, { cache: { staleTime: 0, gcTime: 600000, refresh: true } })
         .then(function (r) { onData(k, r); }, function (e) { onError(k, e); });
-    })).then(function () { busy = false; $("refresh").disabled = false; global.loading = false; renderStatus(); });
+    })).then(function () { busy = false; $("refresh").disabled = false; global.loading = false; renderStatus(); if (!watching && !global.error) { watching = true; watchAll(); } });
   }
 
   // 화면
@@ -669,7 +670,7 @@ a { color: inherit; }
   function noMcp() { global.loading = false; global.error = "unavailable"; render(); $("refresh").disabled = true; }
   if (window.claude && typeof window.claude.use === "function") {
     window.claude.use("permissions").then(function (p) { perms = p; }, function () {});
-    window.claude.use("mcp").then(function (m) { mcp = m; if (!mcp) return noMcp(); watchAll(); }, noMcp);
+    window.claude.use("mcp").then(function (m) { mcp = m; if (!mcp) return noMcp(); readNow(); }, noMcp);
   } else noMcp();
 })();
 </script>
