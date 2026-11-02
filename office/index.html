@@ -68,7 +68,7 @@ a { color: inherit; }
 .tag { position: absolute; transform: translateX(-50%); font-weight: 700; font-size: clamp(10px, 2.6cqw, 16px); line-height: 1; padding: .35em .7em .3em; white-space: nowrap; background: #ffffff; color: #858c88; border: 1px solid #b9bfbb; }
 .tag.on { background: #149a55; color: #ffffff; border-color: #0d6e3c; }
 .tag em { font-style: normal; font-weight: 600; font-size: .72em; margin-left: .35em; opacity: .8; }
-.bubble { position: absolute; transform: translate(-50%, -100%); width: 25%; padding: .5em .65em; background: #ffffff; color: #121514; font-size: clamp(9px, 2.05cqw, 13.5px); line-height: 1.35; font-weight: 500; border: 1.5px solid #121514; word-break: keep-all; overflow-wrap: anywhere; }
+.bubble { position: absolute; transform: translate(-50%, -100%); width: 21%; padding: .5em .65em; background: #ffffff; color: #121514; font-size: clamp(9px, 2.05cqw, 13.5px); line-height: 1.35; font-weight: 500; border: 1.5px solid #121514; word-break: keep-all; overflow-wrap: anywhere; }
 .bubble span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .bubble::after { content: ""; position: absolute; left: 50%; bottom: -6px; width: 9px; height: 9px; margin-left: -5px; background: #ffffff; border-right: 1.5px solid #121514; border-bottom: 1.5px solid #121514; transform: rotate(45deg); }
 .board { position: absolute; transform: translate(-50%, -50%); text-align: center; color: #121514; font-weight: 700; font-size: clamp(8px, 2cqw, 13px); line-height: 1.15; }
@@ -155,7 +155,7 @@ a { color: inherit; }
 
 <div class="wrap">
   <header class="top full">
-    <h1><small>운동과 건강함 · AI 직원 3명</small>운동과 건강함 오피스</h1>
+    <h1><small>운동과 건강함 · AI 직원 4명</small>운동과 건강함 오피스</h1>
     <div class="status" aria-live="polite">
       <span id="status"><i class="dot wait"></i>노션을 불러오는 중이에요</span>
       <button class="btn" id="refresh" type="button">지금 다시 읽기</button>
@@ -204,6 +204,12 @@ a { color: inherit; }
     </section>
   </div>
 
+  <section class="sec full" aria-labelledby="h-shorts">
+    <h2 id="h-shorts">쇼츠 아웃라이어 <span class="sub">요청할 때만 · 제목과 후킹 모음</span><a class="more" href="https://app.notion.com/p/ce42a8f3e02843d093491846ae903706" target="_blank" rel="noopener">노션에서 전체 보기</a></h2>
+    <p class="sec-err" id="err-shorts" hidden></p>
+    <ol class="outs" id="shorts"></ol>
+  </section>
+
   <section class="sec full" aria-labelledby="h-log">
     <h2 id="h-log">최근 업무일지 <span class="sub">최근 12줄</span><a class="more" href="https://app.notion.com/p/c76bf9ef2e434cc08ab11caba176ab36" target="_blank" rel="noopener">노션에서 전체 보기</a></h2>
     <p class="sec-err" id="err-log" hidden></p>
@@ -213,7 +219,7 @@ a { color: inherit; }
   <footer class="foot full">
     <span>데이터: 노션 「운동과 건강함 오피스」</span>
     <a href="https://app.notion.com/p/40bd6ed5debd81feaaa6f5bc00df1084" target="_blank" rel="noopener">노션 페이지 열기</a>
-    <span>직원 3명 = Claude 하나에게 맡긴 역할 3개</span>
+    <span>직원 4명 = Claude 하나에게 맡긴 역할 4개</span>
   </footer>
 </div>
 
@@ -224,7 +230,8 @@ a { color: inherit; }
   var SRC = {
     log:  { url: "collection://b225ce1f-296d-4d27-b968-25bd6f5208ea", sort: "날짜" },
     cand: { url: "collection://87e7ef2a-b03e-4aee-b932-2316a0b31b79", sort: "추가일" },
-    out:  { url: "collection://67f717ce-64c0-4bdf-81bc-8f376fb6b7bb", sort: "배수" }
+    out:  { url: "collection://67f717ce-64c0-4bdf-81bc-8f376fb6b7bb", sort: "배수" },
+    shorts: { url: "collection://aa214cca-4fbc-4ba2-b012-41b84f28d91a", sort: "배수" }
   };
   Object.keys(SRC).forEach(function (k) {
     var s = SRC[k];
@@ -235,11 +242,12 @@ a { color: inherit; }
   var STAFF = [
     { key: "섭외", badge: "메인", role: "촬영할 전문가 찾기 · 섭외 메시지", hair: "#1c1c21", skin: "#efc7a2", shirt: "#2b4c7e", collar: "#f4f4f2", pants: "#262b36" },
     { key: "아웃라이어", role: "구독자 대비 터진 건강 영상 찾기", hair: "#5a3a26", skin: "#f3d1b0", shirt: "#d4602a", collar: "#d4602a", pants: "#3a3530", glasses: true },
-    { key: "기획", role: "촬영 패키지 · 질문지 · 제목 · 썸네일", hair: "#2b211d", skin: "#eec19a", shirt: "#f4f4f2", collar: "#2f7a4f", pants: "#2c3a33", coat: true }
+    { key: "기획", role: "촬영 패키지 · 질문지 · 제목 · 썸네일", hair: "#2b211d", skin: "#eec19a", shirt: "#f4f4f2", collar: "#2f7a4f", pants: "#2c3a33", coat: true },
+    { key: "쇼츠", badge: "요청 시", role: "쇼츠 아웃라이어 제목 · 후킹 모으기", hair: "#3a2a22", skin: "#f1cba8", shirt: "#b8336a", collar: "#f4f4f2", pants: "#2a2730" }
   ];
   var KEYS = STAFF.map(function (s) { return s.key; });
   var W = 256, H = 144, WALL = 46, DESK_Y = 92;
-  var XS = [56, 128, 200];
+  var XS = [40, 96, 152, 208];
   STAFF.forEach(function (s, i) { s.x = XS[i]; s.cx = s.x; s.cy = DESK_Y; s.walking = null; s.blinkAt = 0; s.on = false; });
   var SPOTS = [{ x: 232, y: 64 }, { x: 196, y: 64 }, { x: 24, y: 64 }];
 
@@ -296,6 +304,13 @@ a { color: inherit; }
         var v = num(r["조회수"]), s = num(r["구독자"]), x = num(r["배수"]);
         if (x == null && v != null && s) x = v / s;
         return { title: clean(r["제목"]), ch: clean(r["채널"]), views: v, subs: s, x: x, up: dayKey(r["date:업로드일:start"] || ""), field: clean(r["분야"]), form: clean(r["형식"]), why: clean(r["왜 터졌나"]), ours: clean(r["우리 버전 기획"]), link: href(r["링크"]) || href(r.url), i: i };
+      }).sort(function (a, b) { return ((b.x == null ? -1 : b.x) - (a.x == null ? -1 : a.x)) || (a.i - b.i); });
+    },
+    shorts: function (raw) {
+      return raw.map(function (r, i) {
+        var v = num(r["조회수"]), s = num(r["구독자"]), x = num(r["배수"]);
+        if (x == null && v != null && s) x = v / s;
+        return { title: clean(r["제목"]), ch: clean(r["채널"]), views: v, subs: s, x: x, up: dayKey(r["date:업로드일:start"] || ""), sub: clean(r["세부 주제"]), hook: clean(r["후킹"]), hookSrc: clean(r["후킹 출처"]), hookType: clean(r["후킹 유형"]), why: clean(r["왜 터졌나"]), ours: clean(r["우리 버전 첫 문장"]), link: href(r["링크"]) || href(r.url), i: i };
       }).sort(function (a, b) { return ((b.x == null ? -1 : b.x) - (a.x == null ? -1 : a.x)) || (a.i - b.i); });
     }
   };
@@ -412,7 +427,7 @@ a { color: inherit; }
       $("last-" + i).textContent = r ? (r.day === today ? (hasTime(r.date) ? fmtTime.format(new Date(r.t)) + " · " : "오늘 · ") : shortDay(r.day) + " · ") + r.task : s.role;
       $("last-" + i).title = r ? r.task : s.role;
     });
-    $("today-sum").textContent = SRC.log.rows ? "출근 " + on + " / 3" : "";
+    $("today-sum").textContent = SRC.log.rows ? "출근 " + on + " / " + STAFF.length : "";
     return on;
   }
 
@@ -479,6 +494,21 @@ a { color: inherit; }
     }).join("");
   }
 
+  function renderShorts() {
+    var rows = SRC.shorts.rows, box = $("shorts");
+    if (!rows) { box.innerHTML = '<li class="empty">노션에서 읽어오면 여기에 쇼츠 아웃라이어가 떠요.</li>'; return; }
+    if (!rows.length) { box.innerHTML = '<li class="empty">아직 기준(채널 60만 미만 · 1년 이내 · 구독자의 10배 이상)을 통과한 쇼츠가 없어요. <b>“암 쇼츠 아웃라이어 찾아줘”</b>처럼 요청하면 제목과 후킹이 함께 쌓여요.</li>'; return; }
+    box.innerHTML = rows.slice(0, 10).map(function (r) {
+      var x = r.x == null ? "—" : "×" + (r.x >= 10 ? Math.round(r.x) : r.x.toFixed(1));
+      var meta = [r.ch, r.subs != null ? "구독자 " + kNum(r.subs) : "", r.views != null ? "조회수 " + kNum(r.views) : "", r.up ? shortDay(r.up) + " 업로드" : "", r.sub, r.hookType].filter(Boolean).join(" · ");
+      var t = r.link ? '<a href="' + esc(r.link) + '" target="_blank" rel="noopener">' + esc(r.title || "(제목 없음)") + "</a>" : esc(r.title || "(제목 없음)");
+      return '<li class="out"><div class="x' + (r.x != null && r.x >= 10 ? " hot" : "") + '">' + x + "<small>구독자 대비</small></div>" +
+        '<div class="t">' + t + "</div>" + (meta ? '<div class="meta">' + esc(meta) + "</div>" : "") +
+        (r.hook ? '<div class="ours"><b>후킹</b>' + esc(r.hook) + (r.hookSrc ? ' <span style="color:var(--dim);font-size:12px">(' + esc(r.hookSrc) + ")</span>" : "") + "</div>" : "") +
+        (r.ours ? '<div class="why">우리 버전: ' + esc(r.ours) + "</div>" : "") + "</li>";
+    }).join("");
+  }
+
   function renderLog() {
     var box = $("log"), rows = SRC.log.rows;
     if (!rows) { box.innerHTML = '<li><span class="dt"></span><span class="who"></span><span class="what" style="color:var(--dim)">노션에서 읽어오면 여기에 최근 기록이 떠요.</span></li>'; return; }
@@ -511,15 +541,15 @@ a { color: inherit; }
       if (s.on && o.todayLast) { b.innerHTML = "<span>" + esc(o.todayLast.task || "(제목 없음)") + "</span>"; b.title = o.todayLast.task; b.hidden = false; }
       else b.hidden = true;
     });
-    $("board").innerHTML = SRC.log.rows ? "<b>" + on + "/3</b>오늘 출근" : "<b>…</b>불러오는 중";
+    $("board").innerHTML = SRC.log.rows ? "<b>" + on + "/" + STAFF.length + "</b>오늘 출근" : "<b>…</b>불러오는 중";
   }
 
   function render() {
     var today = todayKey(), by = byStaff(today);
     renderStatus(); renderNotice();
     var on = renderStaff(by, today);
-    renderMetrics(); renderCands(); renderOuts(); renderLog();
-    ["cand", "out", "log"].forEach(renderSecErr);
+    renderMetrics(); renderCands(); renderOuts(); renderShorts(); renderLog();
+    ["cand", "out", "shorts", "log"].forEach(renderSecErr);
     renderOverlay(by, on);
   }
 
