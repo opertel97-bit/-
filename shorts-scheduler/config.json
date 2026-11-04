@@ -1,0 +1,17 @@
+{
+  "timezone": "Asia/Seoul",
+  "daily_times": ["09:00", "15:00", "21:00"],
+  "start_date": null,
+  "min_minutes_from_now": 60,
+
+  "category_id": "15",
+  "language": "ko",
+  "made_for_kids": false,
+  "shorts_max_seconds": 180,
+
+  "description_footer": "🐱 매일 고양이 쇼츠 올라옵니다 — 구독하고 같이 봐요!\n#고양이 #냥스타그램 #shorts",
+
+  "max_tags": 15,
+  "max_hashtags": 5,
+  "max_uploads_per_run": 6
+}

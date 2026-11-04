@@ -1,0 +1,7 @@
+# 계정 비밀 정보 — 절대 GitHub에 올리지 마세요
+client_secret.json
+token.json
+
+# 영상 파일
+videos/*
+!videos/.gitkeep

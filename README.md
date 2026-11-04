@@ -34,3 +34,9 @@ npx serve .
 4. Deploy 클릭
 
 배포 후에도 `index.html` / `styles.css`를 수정해서 다시 push하면 자동으로 반영됩니다.
+
+---
+
+## 유튜브 쇼츠 자동 예약 도구
+
+`shorts-scheduler/` 폴더에 있습니다. 사용법은 [shorts-scheduler/README.md](shorts-scheduler/README.md)를 보세요.
