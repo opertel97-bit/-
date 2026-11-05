@@ -28,15 +28,18 @@ fetch  →  (plan.csv 에 메모 · 롱폼 적기)  →  generate  →  schedule
 
 ## 1. 설치 (윈도우 PC, 최초 1회)
 
-1. [python.org](https://www.python.org/downloads/) 에서 Python 3.11 이상 설치 (설치 화면에서 **Add python.exe to PATH** 체크)
-2. 이 저장소를 받고 `youtube-scheduler` 폴더에서 명령 프롬프트(cmd)를 엽니다.
-3. 필요한 패키지 설치:
+1. [python.org](https://www.python.org/downloads/) 에서 Python 설치
+   - **Python Install Manager** 로 설치했다면, 설치 후 검은 창에 질문이 나옵니다. 모두 `y` 입력 후 Enter 하세요. (PATH 추가, 최신 Python 설치)
+   - 예전 방식 설치 파일이라면 첫 화면에서 **Add python.exe to PATH** 를 체크하세요.
+2. 코드 받기: 깃허브 저장소 페이지 → 초록색 **Code** 버튼 → **Download ZIP** → 받은 ZIP 우클릭 → **모두 압축 풀기**
+3. 명령 프롬프트 열기: 압축 푼 폴더 안의 `youtube-scheduler` 폴더로 들어가서, 탐색기 맨 위 **주소창**을 클릭하고 `cmd` 입력 후 Enter. 그 폴더 위치로 검은 창이 열립니다.
+4. 필요한 패키지 설치:
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-4. 설정 파일 복사 후 메모장으로 내 채널에 맞게 수정:
+5. 설정 파일 복사 후 메모장으로 내 채널에 맞게 수정:
 
 ```bash
 copy config.example.yaml config.yaml
