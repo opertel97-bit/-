@@ -120,9 +120,14 @@ class ComposeTests(unittest.TestCase):
     cfg = {"writing": {"fixed_hashtags": ["#shorts"], "max_generated_hashtags": 2, "description_footer": "전체 영상은 채널에서!",
                        "default_tags": ["채널"], "max_generated_tags": 3}}
 
-    def test_description(self):
-        d = yt.compose_description("본문입니다.", ["고양이 밈", "#shorts", "냥", "초과"], self.cfg)
-        self.assertEqual(d, "본문입니다.\n\n전체 영상은 채널에서!\n\n#shorts #고양이밈")
+    def test_description_topic_hashtags_first(self):
+        d = yt.compose_description("본문입니다.", ["췌장암 증상", "#shorts", "초과"], self.cfg)
+        self.assertEqual(d, "본문입니다.\n\n전체 영상은 채널에서!\n\n#췌장암증상 #shorts")
+
+    def test_existing_body_not_duplicated(self):
+        body = "기존 설명\n\n전체 영상은 채널에서!\n#췌장암"
+        d = yt.compose_description(body, ["췌장암", "소화불량"], self.cfg)
+        self.assertEqual(d, body + "\n\n#소화불량 #shorts")
 
     def test_tags(self):
         self.assertEqual(yt.compose_tags(["고양이", "#채널", "밈", "버려짐"], self.cfg), "채널, 고양이, 밈")
@@ -196,27 +201,64 @@ class CsvTests(unittest.TestCase):
             self.assertEqual(yt.load_plan(p)[0]["new_title"], "제목, 쉼표")
 
 
+class FakeClaude:
+    def __init__(self, items):
+        self.items, self.calls = items, []
+        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self.create))
+
+    def create(self, **kw):
+        self.calls.append(kw)
+        text = json.dumps({"items": self.items})
+        return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="thinking"), SimpleNamespace(type="text", text=text)])
+
+
+BASE_CFG = {"channel": {"name": "운동과 건강함"}, "writing": {"fixed_hashtags": ["#shorts"]}, "claude": {}}
+
+
 class ClaudeTests(unittest.TestCase):
+    def test_schema_has_no_title_by_default(self):
+        props = yt.gen_schema(BASE_CFG)["properties"]["items"]["items"]["properties"]
+        self.assertNotIn("title", props)
+        cfg = {**BASE_CFG, "writing": {"generate_title": True}}
+        self.assertIn("title", yt.gen_schema(cfg)["properties"]["items"]["items"]["properties"])
+        self.assertNotIn("새 제목", yt.build_system_prompt(BASE_CFG))
+
     def test_call_claude_parses_structured_output(self):
-        captured = {}
-
-        def create(**kw):
-            captured.update(kw)
-            text = json.dumps({"items": [{"video_id": "a", "title": "T", "description": "D", "hashtags": ["#x"], "tags": ["y"]}]})
-            return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="thinking"), SimpleNamespace(type="text", text=text)])
-
-        client = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(create=create)))
-        cfg = {"channel": {"name": "채널"}, "writing": {}, "claude": {}}
-        out = yt.call_claude(client, cfg, [{"video_id": "a"}])
-        self.assertEqual(out[0]["title"], "T")
-        self.assertEqual(captured["model"], "claude-opus-5-5")
-        self.assertEqual(captured["output_config"]["format"]["type"], "json_schema")
+        fake = FakeClaude([{"video_id": "a", "target_viewer": "50대", "description": "D", "hashtags": ["#x"], "tags": ["y"]}])
+        out = yt.call_claude(fake, BASE_CFG, [{"video_id": "a"}])
+        self.assertEqual(out[0]["description"], "D")
+        self.assertEqual(fake.calls[0]["model"], "claude-opus-5-5")
+        self.assertEqual(fake.calls[0]["output_config"]["format"]["type"], "json_schema")
 
     def test_refusal_raises(self):
         client = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(
             create=lambda **kw: SimpleNamespace(stop_reason="refusal", content=[]))))
         with self.assertRaises(yt.UserError):
-            yt.call_claude(client, {"channel": {}, "writing": {}, "claude": {}}, [])
+            yt.call_claude(client, BASE_CFG, [])
+
+    def test_generate_keeps_titles_and_existing_description(self):
+        import anthropic
+        with tempfile.TemporaryDirectory() as d:
+            plan = Path(d) / "plan.csv"
+            yt.save_plan([row("a", current_title="췌장암, 이 증상 놓치면 늦습니다"), row("b")], plan)
+            (Path(d) / "videos_cache.json").write_text(json.dumps({"b": {"snippet": {"description": "직접 쓴 설명"}}}), encoding="utf-8")
+            fake = FakeClaude([
+                {"video_id": "a", "target_viewer": "소화불량 50대", "description": "새 본문", "hashtags": ["췌장암", "소화불량", "건강정보"], "tags": ["췌장암 초기증상"]},
+                {"video_id": "b", "target_viewer": "x", "description": "버려질 본문", "hashtags": ["무릎운동"], "tags": ["무릎"]},
+            ])
+            cfg = {**BASE_CFG, "plan_file": str(plan)}
+            orig = anthropic.Anthropic
+            anthropic.Anthropic = lambda: fake
+            try:
+                yt.cmd_generate(cfg, SimpleNamespace(include_long=False, overwrite=False, only=None, limit=None))
+            finally:
+                anthropic.Anthropic = orig
+            a, b = yt.load_plan(plan)
+            self.assertEqual(a["new_title"], "")  # 제목은 건드리지 않음
+            self.assertEqual(a["new_description"], "새 본문\n\n#췌장암 #소화불량 #건강정보 #shorts")
+            self.assertEqual(a["new_tags"], "췌장암 초기증상")
+            self.assertEqual(b["new_description"], "직접 쓴 설명\n\n#무릎운동 #shorts")
+            self.assertIn("췌장암, 이 증상", fake.calls[0]["messages"][0]["content"])
 
 
 if __name__ == "__main__":

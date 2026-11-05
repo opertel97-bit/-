@@ -393,63 +393,103 @@ def cmd_schedule(cfg, args):
 
 # ---------------------------------------------------------------- 명령: generate (Claude)
 
-GEN_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "items": {
-            "type": "array",
+
+def wants_title(cfg: dict) -> bool:
+    # 기본값 False: 제목은 건드리지 않고 설명란 · 해시태그 · 태그만 작성
+    return bool(cfg["writing"].get("generate_title", False))
+
+
+def gen_schema(cfg: dict) -> dict:
+    props = {
+        "video_id": {"type": "string"},
+        "target_viewer": {"type": "string"},
+        "description": {"type": "string"},
+        "hashtags": {"type": "array", "items": {"type": "string"}},
+        "tags": {"type": "array", "items": {"type": "string"}},
+    }
+    if wants_title(cfg):
+        props["title"] = {"type": "string"}
+    return {
+        "type": "object",
+        "properties": {
             "items": {
-                "type": "object",
-                "properties": {
-                    "video_id": {"type": "string"},
-                    "title": {"type": "string"},
-                    "description": {"type": "string"},
-                    "hashtags": {"type": "array", "items": {"type": "string"}},
-                    "tags": {"type": "array", "items": {"type": "string"}},
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": props,
+                    "required": list(props),
+                    "additionalProperties": False,
                 },
-                "required": ["video_id", "title", "description", "hashtags", "tags"],
-                "additionalProperties": False,
-            },
-        }
-    },
-    "required": ["items"],
-    "additionalProperties": False,
-}
+            }
+        },
+        "required": ["items"],
+        "additionalProperties": False,
+    }
 
 
 def build_system_prompt(cfg: dict) -> str:
     ch, wr = cfg["channel"], cfg["writing"]
+    n_hash = wr.get("max_generated_hashtags", 4)
+    n_tags = wr.get("max_generated_tags", 10)
+    fixed = " ".join(normalize_hashtag(h) for h in (wr.get("fixed_hashtags") or []))
     lines = [
-        "너는 유튜브 쇼츠 채널의 제목·설명란 카피라이터야. 각 영상마다 제목, 설명 본문, 해시태그, 검색용 태그를 한국어로 써줘.",
+        "너는 유튜브 쇼츠의 노출·검색 담당자야. 목표는 각 영상이 '이 내용이 꼭 필요한 시청자'에게 추천·검색되도록",
+        "설명란 해시태그와 검색 태그를 고르는 것이야. 한국어로 작성해.",
         "",
         f"채널 이름: {ch.get('name', '')}",
         f"채널 소개: {ch.get('about', '')}",
         f"말투/톤: {ch.get('tone', '')}",
         "",
-        "규칙:",
-        f"- 제목은 {wr.get('title_max_chars', 40)}자 이내. 첫 몇 글자에 핵심 궁금증이나 이득이 드러나게.",
-        "- 영상 내용(메모·기존 제목·관련 롱폼)에 없는 사실을 지어내지 마. 과장, 낚시성 표현, 허위·단정적 효과 주장 금지.",
-        "- 제목과 설명에 꺾쇠괄호(< >) 사용 금지.",
-        "- description 은 2~4문장 본문만. 해시태그, 링크, 채널 고정 문구는 넣지 마 (프로그램이 따로 붙임).",
-        f"- hashtags 는 영상에 딱 맞는 것 {wr.get('max_generated_hashtags', 3)}개 이하, 띄어쓰기 없이. # 은 붙여도 되고 안 붙여도 돼.",
-        f"- tags 는 검색용 키워드 {wr.get('max_generated_tags', 8)}개 이하. 짧은 단어/구 위주.",
-        "- 같은 묶음 안의 영상끼리 제목이 서로 비슷해지지 않게 각각 다른 각도로.",
+        "각 영상마다 이렇게 생각해:",
+        "1. target_viewer: 제목과 기존 설명으로 영상의 핵심 주제를 파악하고, 이 영상이 꼭 필요한 시청자를 한 줄로 적어.",
+        "   (예: '최근 소화불량과 등 통증이 있는 50~60대', '무릎이 아파 운동을 망설이는 중년')",
+        "2. 그 시청자가 유튜브 검색창에 실제로 칠 법한 말을 떠올려.",
+        "",
+        f"hashtags (설명란 맨 아래에 붙는 해시태그, {n_hash}개 이하, 중요한 순서대로):",
+        "- 1번: 영상의 핵심 주제 키워드 (질환명·부위·운동명 등 가장 구체적인 것)",
+        "- 2번: 시청자의 증상·고민·상황을 담은 키워드",
+        "- 나머지: 주제가 속한 분야 키워드 1개 (예: 건강정보, 운동법). 너무 넓은 단어만으로 채우지 마.",
+        "- 사람들이 실제로 검색하는 흔한 표기를 써. 억지로 만든 합성어 금지. 띄어쓰기 없이.",
+        "- 영상과 관계없는 유행 해시태그나 오해를 부르는 해시태그 금지 (유튜브 정책 위반).",
+        f"- {fixed} 는 프로그램이 따로 붙이니 넣지 마." if fixed else "",
+        "",
+        f"tags (설명란에 안 보이는 검색용 태그, {n_tags}개 이하):",
+        "- 핵심 키워드, 동의어·다른 표기(예: 췌장암/췌장 암), 검색 문구(예: 췌장암 초기증상, 췌장암 원인)를 섞어.",
+        "- 영상에 나온 전문가 이름이나 프로그램명이 제목·설명에 있으면 포함해도 돼.",
+        "",
+        "description (설명 본문):",
+        "- 2~3문장. 이 영상에서 무엇을 알 수 있는지 핵심 키워드를 자연스럽게 넣어 써.",
+        "- 해시태그, 링크, 채널 고정 문구는 넣지 마 (프로그램이 따로 붙임).",
+        "",
+        "공통 규칙:",
+        "- 제목·기존 설명·메모·관련 롱폼에 없는 사실을 지어내지 마. 과장이나 단정적인 효과 주장 금지.",
+        "- 꺾쇠괄호(< >) 사용 금지.",
         "- 입력으로 받은 video_id 를 그대로 돌려줘.",
     ]
+    if wants_title(cfg):
+        lines += [
+            f"- title: 새 제목 {wr.get('title_max_chars', 40)}자 이내. 첫 몇 글자에 핵심 궁금증이나 이득이 드러나게.",
+        ]
     if ch.get("extra_rules"):
         lines += [f"- {x}" for x in ch["extra_rules"]]
-    if ch.get("title_examples"):
-        lines += ["", "이 채널에서 반응이 좋았던 제목 예시 (스타일만 참고):"] + [f"- {t}" for t in ch["title_examples"]]
-    return "\n".join(lines)
+    examples = [t for t in (ch.get("title_examples") or []) if t and not t.startswith("예시 제목")]
+    if wants_title(cfg) and examples:
+        lines += ["", "이 채널에서 반응이 좋았던 제목 예시 (스타일만 참고):"] + [f"- {t}" for t in examples]
+    return "\n".join(l for l in lines if l is not None)
 
 
 def compose_description(body: str, hashtags: list[str], cfg: dict) -> str:
+    """본문 + 고정 문구 + 해시태그. 본문에 이미 있는 문구·해시태그는 중복으로 붙이지 않음."""
     wr = cfg["writing"]
-    limit = int(wr.get("max_generated_hashtags", 3))
-    tags = dedupe([normalize_hashtag(h) for h in (wr.get("fixed_hashtags") or [])] + [normalize_hashtag(h) for h in hashtags[:limit]])
-    parts = [body.strip()]
+    limit = int(wr.get("max_generated_hashtags", 4))
+    body = body.strip()
+    already = {h.lower() for h in HASHTAG_RE.findall(body)}
+    tags = [t for t in dedupe(
+        [normalize_hashtag(h) for h in hashtags[:limit]] + [normalize_hashtag(h) for h in (wr.get("fixed_hashtags") or [])]
+    ) if t and t[1:].lower() not in already]
+    parts = [body]
     footer = (wr.get("description_footer") or "").strip()
-    if footer:
+    if footer and footer not in body:
         parts.append(footer)
     if tags:
         parts.append(" ".join(tags))
@@ -458,7 +498,7 @@ def compose_description(body: str, hashtags: list[str], cfg: dict) -> str:
 
 def compose_tags(tags: list[str], cfg: dict) -> str:
     wr = cfg["writing"]
-    limit = int(wr.get("max_generated_tags", 8))
+    limit = int(wr.get("max_generated_tags", 10))
     merged = dedupe([t.strip().lstrip("#") for t in (wr.get("default_tags") or []) + tags[:limit]])
     while merged and tags_length(merged) > TAGS_MAX_CHARS:
         merged.pop()
@@ -466,20 +506,19 @@ def compose_tags(tags: list[str], cfg: dict) -> str:
 
 
 def call_claude(client, cfg: dict, items: list[dict]) -> list[dict]:
-    import anthropic  # noqa: F401  (오류 클래스용)
-
     cl = cfg["claude"]
+    what = "제목·설명·해시태그·태그" if wants_title(cfg) else "설명·해시태그·태그 (제목은 그대로 둠)"
     resp = client.beta.messages.create(
         model=cl.get("model", "claude-opus-5-5"),
         max_tokens=16000,
         system=build_system_prompt(cfg),
-        messages=[{"role": "user", "content": "아래 영상들의 제목·설명·해시태그·태그를 써줘.\n\n" + json.dumps(items, ensure_ascii=False, indent=1)}],
-        output_config={"effort": cl.get("effort", "medium"), "format": {"type": "json_schema", "schema": GEN_SCHEMA}},
+        messages=[{"role": "user", "content": f"아래 영상들의 {what}를 써줘.\n\n" + json.dumps(items, ensure_ascii=False, indent=1)}],
+        output_config={"effort": cl.get("effort", "medium"), "format": {"type": "json_schema", "schema": gen_schema(cfg)}},
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",  # 안전 분류기가 거절하면 서버가 다른 모델로 자동 재시도
     )
     if resp.stop_reason == "refusal":
-        raise UserError("Claude 가 이 묶음 작성을 거절했습니다. 메모 내용을 확인해주세요.")
+        raise UserError("Claude 가 이 묶음 작성을 거절했습니다. 제목·메모 내용을 확인해주세요.")
     if resp.stop_reason == "max_tokens":
         raise UserError("응답이 잘렸습니다. config.yaml 의 claude.batch_size 를 줄여주세요.")
     text = next((b.text for b in resp.content if b.type == "text"), "")
@@ -497,7 +536,7 @@ def cmd_generate(cfg, args):
         r for r in rows
         if (args.include_long or r["is_short"] == "Y")
         and r["current_privacy"] != "public"
-        and (args.overwrite or not r["new_title"])
+        and (args.overwrite or not r["new_description"])
     ]
     if args.only:
         wanted = set(split_tags(args.only))
@@ -505,26 +544,27 @@ def cmd_generate(cfg, args):
     if args.limit:
         targets = targets[: args.limit]
     if not targets:
-        print("작성할 영상이 없습니다. (이미 new_title 이 있는 영상은 --overwrite 를 붙여야 다시 씁니다)")
+        print("작성할 영상이 없습니다. (이미 new_description 이 있는 영상은 --overwrite 를 붙여야 다시 씁니다)")
         return
 
     cache_path = plan_path.with_name("videos_cache.json")
     cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.exists() else {}
+    keep_body = cfg["writing"].get("keep_existing_description", True)
 
     client = anthropic.Anthropic()
     batch = int(cfg["claude"].get("batch_size", 10))
     done = 0
     for i in range(0, len(targets), batch):
         chunk = targets[i : i + batch]
-        items = []
+        items, old = [], {}
         for r in chunk:
-            old_desc = (cache.get(r["video_id"], {}).get("snippet", {}).get("description") or "")[:1500]
+            old[r["video_id"]] = (cache.get(r["video_id"], {}).get("snippet", {}).get("description") or "").strip()
             items.append({
                 "video_id": r["video_id"],
-                "current_title": r["current_title"],
+                "title": r["current_title"],
                 "memo": r["memo"],
                 "related_longform": r["related_longform"],
-                "existing_description": old_desc,
+                "existing_description": old[r["video_id"]][:1500],
             })
         try:
             results = call_claude(client, cfg, items)
@@ -542,11 +582,16 @@ def cmd_generate(cfg, args):
             if not it:
                 print(f"  ! 결과 누락: {r['current_title']}")
                 continue
-            r["new_title"] = it["title"].strip()
-            r["new_description"] = compose_description(it["description"], it["hashtags"], cfg)
+            if wants_title(cfg):
+                r["new_title"] = it["title"].strip()
+            # 이미 설명을 써둔 영상은 그 글을 살리고 해시태그만 붙임
+            body = old[r["video_id"]] if (keep_body and old[r["video_id"]]) else it["description"]
+            r["new_description"] = compose_description(body, it["hashtags"], cfg)
             r["new_tags"] = compose_tags(it["tags"], cfg)
             done += 1
-            print(f"  ✓ {r['current_title']}  →  {r['new_title']}")
+            print(f"  ✓ {r['current_title']}")
+            print(f"      대상: {it.get('target_viewer', '')}")
+            print(f"      해시태그: {' '.join('#' + h for h in HASHTAG_RE.findall(r['new_description']))}")
         save_plan(rows, plan_path)  # 묶음마다 저장 (중간에 끊겨도 보존)
     print(f"{done}개 작성 완료. plan.csv 를 열어 확인·수정한 뒤 `python yt.py check` 를 실행하세요.")
 

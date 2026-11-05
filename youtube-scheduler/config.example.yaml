@@ -23,10 +23,12 @@ channel:
 
 # 설명란 · 해시태그 · 태그 구성
 writing:
-  title_max_chars: 40
+  generate_title: false                # false = 제목은 절대 안 건드림 (true 로 바꾸면 제목도 새로 작성)
+  keep_existing_description: true      # 이미 설명을 써둔 영상은 그 글을 살리고 해시태그만 붙임
+  title_max_chars: 40                  # generate_title: true 일 때만 사용
   fixed_hashtags: ["#shorts"]          # 모든 쇼츠 설명 맨 끝에 항상 붙는 해시태그
-  max_generated_hashtags: 3            # 영상별로 Claude 가 추가하는 해시태그 개수 (총 3~5개 권장)
-  max_generated_tags: 8                # 검색용 태그(설명란에 안 보이는 태그) 개수
+  max_generated_hashtags: 4            # 영상별 주제 해시태그 개수 (fixed 포함 총 5개 이하 권장)
+  max_generated_tags: 10               # 검색용 태그(설명란에 안 보이는 태그) 개수
   default_tags: []                     # 모든 영상 공통 태그, 예: ["채널이름", "쇼츠"]
   description_footer: |
     전체 영상은 채널에서 확인하세요!
