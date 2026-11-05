@@ -1,0 +1,37 @@
+# 이 파일을 config.yaml 로 복사한 뒤 내 채널에 맞게 고쳐서 쓰세요.
+#   (윈도우) copy config.example.yaml config.yaml
+
+timezone: Asia/Seoul          # plan.csv 의 시간은 모두 이 시간대(한국 시간) 기준
+plan_file: plan.csv
+shorts_max_seconds: 180       # 이 길이(초) 이하를 쇼츠로 간주 (쇼츠는 최대 3분)
+client_secret_file: client_secret.json   # Google Cloud 에서 받은 OAuth 파일
+token_file: token.json                   # 로그인 후 자동 생성 (공유 금지)
+
+schedule:
+  times: ["18:00", "20:00", "22:00"]    # 하루에 올릴 시간들. schedule --times 로 바꿀 수도 있음
+
+# Claude 가 제목·설명을 쓸 때 참고하는 채널 정보
+channel:
+  name: "채널 이름"
+  about: "어떤 영상을 올리는 채널인지 한두 문장으로"
+  tone: "친근한 반말, 짧고 궁금증을 자극하는 제목"
+  title_examples:             # 조회수 잘 나온 내 쇼츠 제목 3~10개 (스타일 참고용)
+    - "예시 제목 1"
+    - "예시 제목 2"
+  extra_rules:                # 채널만의 추가 규칙 (없으면 비워두기)
+    - "의학·건강 내용은 영상에서 말한 범위를 넘어 단정하지 말 것"
+
+# 설명란 · 해시태그 · 태그 구성
+writing:
+  title_max_chars: 40
+  fixed_hashtags: ["#shorts"]          # 모든 쇼츠 설명 맨 끝에 항상 붙는 해시태그
+  max_generated_hashtags: 3            # 영상별로 Claude 가 추가하는 해시태그 개수 (총 3~5개 권장)
+  max_generated_tags: 8                # 검색용 태그(설명란에 안 보이는 태그) 개수
+  default_tags: []                     # 모든 영상 공통 태그, 예: ["채널이름", "쇼츠"]
+  description_footer: |
+    전체 영상은 채널에서 확인하세요!
+
+claude:
+  model: claude-opus-5-5
+  effort: medium        # low / medium / high
+  batch_size: 10        # 한 번에 몇 개 영상씩 작성할지

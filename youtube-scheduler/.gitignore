@@ -1,0 +1,10 @@
+# 비밀 정보 — 절대 커밋하지 마세요
+client_secret*.json
+token.json
+# 채널 작업 데이터
+plan.csv
+plan.csv.tmp
+videos_cache.json
+longform_checklist.md
+backups/
+__pycache__/

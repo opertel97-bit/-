@@ -34,3 +34,9 @@ npx serve .
 4. Deploy 클릭
 
 배포 후에도 `index.html` / `styles.css`를 수정해서 다시 push하면 자동으로 반영됩니다.
+
+---
+
+## 유튜브 쇼츠 예약 도구
+
+`youtube-scheduler/` 폴더에 쇼츠 예약 공개, 제목·설명란(해시태그) 자동 작성 도구가 있습니다. 공식 YouTube API 만 사용합니다. 사용법은 [youtube-scheduler/README.md](youtube-scheduler/README.md) 를 보세요.
