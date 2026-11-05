@@ -27,6 +27,38 @@ fetch  →  (plan.csv 에 메모 · 롱폼 적기, 선택)  →  generate  →  
 
 ---
 
+## 새 쇼츠가 생길 때마다 하는 순서 (무료)
+
+처음 설치를 마친 뒤에는 아래만 반복하면 됩니다. Claude 와의 대화는 Pro 구독에 포함이라 추가 비용이 없습니다.
+
+```bash
+python yt.py fetch
+```
+새로 올린 초안 쇼츠를 plan.csv 에 추가합니다.
+
+```bash
+python yt.py export
+```
+해시태그가 아직 없는 영상 목록이 메모장으로 열립니다. 전체 복사해서 Claude 대화창에 붙여넣고 아래처럼 요청하세요.
+> "이 쇼츠들 설명란 해시태그랑 검색 태그 써줘. `video_id|설명 본문|#해시태그들|검색 태그` 형식으로, 영상당 한 줄로."
+
+```bash
+python yt.py import
+```
+처음 실행하면 빈 `tags.txt` 가 메모장으로 열립니다. Claude 가 준 내용을 붙여넣고 저장(Ctrl+S)한 뒤 **한 번 더** 실행하면 plan.csv 에 채워집니다. 이미 설명을 써둔 영상은 그 글을 살리고 해시태그만 덧붙입니다.
+
+```bash
+python yt.py apply
+```
+미리보기로 확인합니다.
+
+```bash
+python yt.py apply --execute
+```
+유튜브에 반영합니다. 예약까지 걸려면 그 전에 `schedule` 을 실행하거나, plan.csv 의 `publish_at` 에 시간을 직접 적으세요.
+
+---
+
 ## 1. 설치 (윈도우 PC, 최초 1회)
 
 1. [python.org](https://www.python.org/downloads/) 에서 Python 설치

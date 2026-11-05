@@ -8,3 +8,6 @@ videos_cache.json
 longform_checklist.md
 backups/
 __pycache__/
+for_claude.txt
+tags.txt
+tags_done_*.txt

@@ -261,5 +261,42 @@ class ClaudeTests(unittest.TestCase):
             self.assertIn("췌장암, 이 증상", fake.calls[0]["messages"][0]["content"])
 
 
+class ImportExportTests(unittest.TestCase):
+    TEXT = """
+  a|새 본문입니다.|#췌장암 #췌장암증상 #shorts|췌장암, 췌장암 증상
+b|버려질 본문|#남성호르몬 #남성건강 #shorts|남성호르몬
+zzz|plan 에 없음|#x|y
+깨진 줄
+"""
+
+    def test_parse_and_merge_keeps_existing_description(self):
+        items = yt.parse_import_lines(self.TEXT)
+        self.assertEqual(set(items), {"a", "b", "zzz"})
+        rows = [row("a"), row("b")]
+        cache = {"b": {"snippet": {"description": "기존 설명\n#남성건강"}}}
+        filled, kept, missing = yt.import_rows(rows, items, cache)
+        self.assertEqual((filled, kept, missing), (2, 1, ["zzz"]))
+        self.assertEqual(rows[0]["new_description"], "새 본문입니다.\n\n#췌장암 #췌장암증상 #shorts")
+        self.assertEqual(rows[0]["new_tags"], "췌장암, 췌장암 증상")
+        self.assertEqual(rows[1]["new_description"], "기존 설명\n#남성건강\n\n#남성호르몬 #shorts")
+        # 두 번 실행해도 같은 결과
+        yt.import_rows(rows, items, cache)
+        self.assertEqual(rows[1]["new_description"], "기존 설명\n#남성건강\n\n#남성호르몬 #shorts")
+
+    def test_cli_export_then_import(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = Path(d) / "plan.csv"
+            yt.save_plan([row("a", current_title="제목A"), row("b", current_title="제목B", new_description="이미 씀")], plan)
+            cfg = {"plan_file": str(plan), "writing": {}}
+            yt.cmd_export(cfg, SimpleNamespace(all=False))
+            self.assertEqual((Path(d) / "for_claude.txt").read_text(encoding="utf-8"), "a|제목A\n")
+            (Path(d) / "tags.txt").write_text("a|본문|#태그 #shorts|태그", encoding="utf-8")
+            yt.cmd_import(cfg, SimpleNamespace(file=None))
+            a, b = yt.load_plan(plan)
+            self.assertEqual(a["new_description"], "본문\n\n#태그 #shorts")
+            self.assertEqual(b["new_description"], "이미 씀")
+            self.assertFalse((Path(d) / "tags.txt").exists())  # 처리 후 보관용 이름으로 바뀜
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,8 @@
   python yt.py apply       변경 내용 미리보기 (--execute 를 붙여야 실제 반영)
   python yt.py verify      유튜브에 실제로 반영됐는지 다시 확인
   python yt.py linklist    스튜디오에서 직접 연결할 '관련 동영상' 체크리스트 만들기
+  python yt.py export      해시태그 없는 영상 목록 → Claude 대화창에 붙여넣기용 (무료)
+  python yt.py import      Claude 가 준 해시태그(tags.txt)를 plan.csv 에 채우기
 """
 from __future__ import annotations
 
@@ -872,6 +874,90 @@ def cmd_linklist(cfg, args):
     print(f"{len(rows)}개 → {out}")
 
 
+# ---------------------------------------------------------------- 명령: export / import (Claude 대화창과 주고받기, 무료)
+
+EXPORT_FILE = "for_claude.txt"
+IMPORT_FILE = "tags.txt"
+
+
+def open_in_notepad(path: Path) -> None:
+    if sys.platform == "win32":
+        try:
+            os.startfile(str(path))  # 윈도우: 기본 프로그램(메모장)으로 열기
+        except OSError:
+            pass
+
+
+def cmd_export(cfg, args):
+    """아직 해시태그가 없는 영상의 'video_id|제목' 목록을 만들어 Claude 대화창에 붙여넣게 함."""
+    plan_path = resolve(cfg, "plan_file")
+    rows = [r for r in load_plan(plan_path) if args.all or not r["new_description"]]
+    if not rows:
+        print("새로 해시태그를 넣을 영상이 없습니다. (모두 작성됨 · 전체를 다시 하려면 --all)")
+        return
+    lines = [f"{r['video_id']}|{r['current_title']}" + (f"|메모: {r['memo']}" if r["memo"] else "") for r in rows]
+    out = plan_path.with_name(EXPORT_FILE)
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"{len(rows)}개 영상 목록 → {out.name}")
+    print("메모장 내용을 전체 복사(Ctrl+A, Ctrl+C)해서 Claude 에게 '해시태그 써줘' 라고 붙여넣으세요.")
+    open_in_notepad(out)
+
+
+def parse_import_lines(text: str) -> dict[str, list[str]]:
+    """'video_id|설명 본문|#해시태그들|검색 태그' 형식 줄들을 읽음 (앞뒤 공백·빈 줄 무시)."""
+    out = {}
+    for line in text.splitlines():
+        parts = [x.strip() for x in line.strip().split("|")]
+        if len(parts) == 4 and parts[0]:
+            out[parts[0]] = parts
+    return out
+
+
+def import_rows(rows: list[dict], items: dict[str, list[str]], cache: dict, keep_existing: bool = True) -> tuple[int, int, list[str]]:
+    """plan 행에 설명 · 해시태그 · 태그를 채움. 이미 설명이 있는 영상은 그 글을 살리고 해시태그만 붙임."""
+    cfg = {"writing": {"max_generated_hashtags": 20, "fixed_hashtags": []}}
+    by_id = {r["video_id"]: r for r in rows}
+    filled = kept = 0
+    for vid, (_, body, hashtags, tags) in items.items():
+        r = by_id.get(vid)
+        if not r:
+            continue
+        old = (cache.get(vid, {}).get("snippet", {}).get("description") or "").strip()
+        base = old if (keep_existing and old) else body
+        r["new_description"] = compose_description(base, hashtags.split(), cfg)
+        r["new_tags"] = tags
+        filled += 1
+        kept += bool(keep_existing and old)
+    missing = [vid for vid in items if vid not in by_id]
+    return filled, kept, missing
+
+
+def cmd_import(cfg, args):
+    plan_path = resolve(cfg, "plan_file")
+    src = Path(args.file) if args.file else plan_path.with_name(IMPORT_FILE)
+    if not src.exists():
+        src.write_text("", encoding="utf-8")
+        print(f"{src.name} 를 메모장으로 엽니다. Claude 가 준 내용을 붙여넣고 저장(Ctrl+S)한 뒤 이 명령을 다시 실행하세요.")
+        open_in_notepad(src)
+        return
+    items = parse_import_lines(src.read_text(encoding="utf-8-sig"))
+    if not items:
+        print(f"{src.name} 에 읽을 내용이 없습니다. Claude 가 준 내용을 붙여넣고 저장한 뒤 다시 실행하세요.")
+        open_in_notepad(src)
+        return
+    rows = load_plan(plan_path)
+    cache_path = plan_path.with_name("videos_cache.json")
+    cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.exists() else {}
+    filled, kept, missing = import_rows(rows, items, cache, cfg["writing"].get("keep_existing_description", True))
+    save_plan(rows, plan_path)
+    print(f"{filled}개 영상에 해시태그·태그 채움 (그중 기존 설명 유지 {kept}개)")
+    if missing:
+        print(f"※ plan.csv 에 없는 영상 {len(missing)}개는 건너뜀: {', '.join(missing[:5])}")
+    if filled:
+        src.rename(src.with_name(f"tags_done_{datetime.now():%Y%m%d-%H%M%S}.txt"))  # 다음번에 섞이지 않게 보관
+        print("다음: python yt.py apply  (미리보기)")
+
+
 # ---------------------------------------------------------------- CLI
 
 
@@ -913,11 +999,18 @@ def main(argv=None):
 
     sub.add_parser("linklist", help="관련 동영상 수동 연결 체크리스트")
 
+    e = sub.add_parser("export", help="해시태그 없는 영상 목록을 Claude 에게 줄 형태로 만들기")
+    e.add_argument("--all", action="store_true", help="이미 작성된 영상도 포함")
+
+    i = sub.add_parser("import", help="Claude 가 준 해시태그(tags.txt)를 plan.csv 에 채우기")
+    i.add_argument("file", nargs="?", help="읽을 파일 (기본: tags.txt)")
+
     args = p.parse_args(argv)
     cfg = load_config()
     handler = {
         "auth": cmd_auth, "fetch": cmd_fetch, "generate": cmd_generate, "schedule": cmd_schedule,
         "check": cmd_check, "apply": cmd_apply, "verify": cmd_verify, "linklist": cmd_linklist,
+        "export": cmd_export, "import": cmd_import,
     }[args.cmd]
     try:
         handler(cfg, args)
