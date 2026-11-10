@@ -573,5 +573,35 @@ class ReplyBatchTests(unittest.TestCase):
             self.assertEqual((Path(d) / "transcript_DJPMelNUU-w.txt").read_text(encoding="utf-8"), "# 롱폼\nko 자막\n")
 
 
+class ReplyAutoTests(unittest.TestCase):
+    def test_auto_with_nothing_pending_does_not_login_or_create_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = {"plan_file": str(Path(d) / "plan.csv"), "timezone": "Asia/Seoul"}
+            orig = yt.get_service
+            yt.get_service = lambda *a, **k: self.fail("로그인하면 안 됨")
+            try:
+                yt.cmd_replies(cfg, SimpleNamespace(do_import=True, days=7, yes=False, video=None, limit=20, delay=60, auto=True))
+            finally:
+                yt.get_service = orig
+            self.assertFalse((Path(d) / "replies.txt").exists())
+
+    def test_auto_posts_without_prompt(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "replies.txt").write_text("a|하나\nb|둘\nc|셋\n", encoding="utf-8")
+            fake = ReplyTests.Fake([[]])
+            cfg = {"plan_file": str(Path(d) / "plan.csv"), "timezone": "Asia/Seoul"}
+            orig, orig_input = yt.get_service, __builtins__["input"] if isinstance(__builtins__, dict) else __builtins__.input
+            yt.get_service = lambda *a, **k: fake
+            import builtins
+            builtins.input = lambda *a: self.fail("질문하면 안 됨")
+            try:
+                yt.cmd_replies(cfg, SimpleNamespace(do_import=True, days=7, yes=False, video=None, limit=2, delay=0, auto=True))
+            finally:
+                yt.get_service = orig
+                builtins.input = orig_input
+            self.assertEqual([p["parentId"] for p in fake.posted], ["a", "b"])
+            self.assertEqual(yt.parse_replies((Path(d) / "replies.txt").read_text(encoding="utf-8")), [("c", "셋")])
+
+
 if __name__ == "__main__":
     unittest.main()

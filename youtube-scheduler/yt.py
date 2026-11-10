@@ -1237,17 +1237,24 @@ def import_replies(yt, src: Path, footers: list[str], limit: int | None, delay: 
 def cmd_replies(cfg, args):
     tz = tz_of(cfg)
     base = resolve(cfg, "plan_file").parent
-    yt = get_service(cfg, need_comments=True)
+    auto = getattr(args, "auto", False)
     if args.do_import:
         src = base / REPLIES_FILE
         if not src.exists() or not parse_replies(src.read_text(encoding="utf-8-sig")):
+            if auto:
+                print(f"[{datetime.now(tz):%Y-%m-%d %H:%M}] 달 답글이 없습니다 ({src.name} 비어 있음).")
+                return
             src.write_text("", encoding="utf-8")
             print(f"{src.name} 를 메모장으로 엽니다. Claude 가 준 답글을 붙여넣고 저장(Ctrl+S)한 뒤 이 명령을 다시 실행하세요.")
             open_in_notepad(src)
             return
-        import_replies(yt, src, reply_footers(cfg), args.limit, args.delay, args.yes, tz)
+        yt = get_service(cfg, interactive=not auto, need_comments=True)
+        if auto:
+            print(f"[{datetime.now(tz):%Y-%m-%d %H:%M}] 예약 답글 달기")
+        import_replies(yt, src, reply_footers(cfg), args.limit, args.delay, args.yes or auto, tz)
         return
 
+    yt = get_service(cfg, interactive=not auto, need_comments=True)
     channel_id = yt.channels().list(part="id", mine=True).execute()["items"][0]["id"]
     vid = video_id_from(args.video) if args.video else None
     todo = fetch_unanswered(yt, channel_id, datetime.now(tz), args.days, max_pages=20 if vid else 5, video_id=vid)
@@ -1433,6 +1440,7 @@ def main(argv=None):
     rp.add_argument("--video", help="이 영상(주소 또는 ID)의 모든 댓글을 모으기")
     rp.add_argument("--limit", type=int, help="--import 때 이번에 달 답글 수 (나머지는 다음에)")
     rp.add_argument("--delay", type=float, default=4, help="답글 사이 간격(초), 기본 4")
+    rp.add_argument("--auto", action="store_true", help="작업 스케줄러용: 확인 질문 · 로그인 창 · 메모장 없이 실행")
 
     tr = sub.add_parser("transcript", help="내 영상 자막을 텍스트로 받기 (답글 근거용)")
     tr.add_argument("video", help="영상 주소 또는 ID")
