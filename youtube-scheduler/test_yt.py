@@ -458,5 +458,70 @@ class CommentTests(unittest.TestCase):
         self.assertTrue(yt.has_scopes(yt.ALL_SCOPES, need_comments=True))
 
 
+class ReplyTests(unittest.TestCase):
+    @staticmethod
+    def thread(cid, vid, author, text, when, replies=()):
+        return {"id": cid, "snippet": {"videoId": vid, "topLevelComment": {"id": cid, "snippet": {
+            "authorChannelId": {"value": author}, "authorDisplayName": author, "textDisplay": text, "publishedAt": when}}},
+            "replies": {"comments": [{"snippet": {"authorChannelId": {"value": a}}} for a in replies]}}
+
+    class Fake:
+        def __init__(self, pages):
+            self.pages, self.posted = pages, []
+
+        def channels(self):
+            return SimpleNamespace(list=lambda **kw: SimpleNamespace(execute=lambda: {"items": [{"id": "MYCH"}]}))
+
+        def videos(self):
+            return SimpleNamespace(list=lambda part, id: SimpleNamespace(execute=lambda: {
+                "items": [{"id": i, "snippet": {"title": "췌장암 | 신호"}} for i in id.split(",")]}))
+
+        def commentThreads(self):
+            def lst(pageToken=None, **kw):
+                i = int(pageToken or 0)
+                resp = {"items": self.pages[i]}
+                if i + 1 < len(self.pages):
+                    resp["nextPageToken"] = str(i + 1)
+                return SimpleNamespace(execute=lambda: resp)
+            return SimpleNamespace(list=lst)
+
+        def comments(self):
+            return SimpleNamespace(insert=lambda part, body: SimpleNamespace(execute=lambda: self.posted.append(body["snippet"])))
+
+    def test_fetch_unanswered(self):
+        t = self.thread
+        fake = self.Fake([[
+            t("c1", "v1", "viewer1", "저도 등이\n아파요", "2026-11-05T02:00:00Z"),
+            t("c2", "v1", "MYCH", "채널 댓글", "2026-11-05T01:00:00Z"),
+            t("c3", "v2", "viewer2", "감사합니다", "2026-11-04T00:00:00Z", replies=["MYCH"]),
+        ], [
+            t("c4", "v2", "viewer3", "좋아요", "2026-11-03T00:00:00Z", replies=["viewer9"]),
+            t("c5", "v2", "viewer4", "오래된 댓글", "2026-10-01T00:00:00Z"),
+        ]])
+        got = yt.fetch_unanswered(fake, "MYCH", NOW, 7)
+        self.assertEqual([g["id"] for g in got], ["c1", "c4"])
+
+    def test_export_and_import_flow(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = Path(d) / "plan.csv"
+            cfg = {"plan_file": str(plan), "timezone": "Asia/Seoul"}
+            fake = self.Fake([[self.thread("c1", "v1", "viewer1", "저도 | 그래요\n정말", "2026-11-10T00:00:00Z")]])
+            orig = yt.get_service
+            yt.get_service = lambda *a, **k: fake
+            try:
+                yt.cmd_replies(cfg, SimpleNamespace(do_import=False, days=30, yes=True))
+                todo = (Path(d) / "replies_todo.txt").read_text(encoding="utf-8").splitlines()
+                self.assertEqual(todo[1], "c1|췌장암 ｜ 신호|viewer1|저도 ｜ 그래요 정말")
+                yt.cmd_replies(cfg, SimpleNamespace(do_import=True, days=7, yes=True))  # 빈 replies.txt 생성
+                self.assertEqual(fake.posted, [])
+                (Path(d) / "replies.txt").write_text("c1|공감합니다. 원장님께서는 꾸준한 관리가 중요하다고 하셨어요.\nc9|-\n", encoding="utf-8")
+                yt.cmd_replies(cfg, SimpleNamespace(do_import=True, days=7, yes=True))
+            finally:
+                yt.get_service = orig
+            self.assertEqual(fake.posted, [{"parentId": "c1", "textOriginal":
+                "공감합니다. 원장님께서는 꾸준한 관리가 중요하다고 하셨어요.\n\n" + yt.DEFAULT_REPLY_FOOTER}])
+            self.assertFalse((Path(d) / "replies.txt").exists())  # 두 번 달리지 않게 보관용 이름으로 바뀜
+
+
 if __name__ == "__main__":
     unittest.main()

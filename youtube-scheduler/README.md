@@ -93,6 +93,22 @@ setup_comment_task.bat
 
 ---
 
+## 시청자 댓글 답글 (반자동, 무료)
+
+```bash
+python yt.py replies
+```
+최근 7일 동안 채널이 아직 답글을 안 단 시청자 댓글이 메모장으로 열립니다. 전체 복사해서 Claude 대화창에 붙여넣고 "답글 써줘" 라고 하세요. Claude 는 `댓글ID|답글` 형식으로 답하고, 스팸·욕설은 `댓글ID|-` 로 건너뜁니다.
+
+```bash
+python yt.py replies --import
+```
+처음엔 빈 `replies.txt` 가 열립니다. Claude 의 답글을 붙여넣고 저장한 뒤 다시 실행하면 미리보기 후 한 번에 답니다. 모든 답글 끝에 "구독 좋아요 하이프까지 해주시면 더 나은 건강 정보로 보답드리겠습니다." 가 자동으로 붙습니다 (`config.yaml` 의 `reply: {footer: "..."}` 로 변경).
+
+답글 원칙: 공감 댓글엔 공감, 전문적인 질문은 제공된 롱폼(원장님 말씀) 내용 안에서만 답하고 그 밖의 개인 증상·약·진단 질문은 전문의 상담을 권합니다.
+
+---
+
 ## 1. 설치 (윈도우 PC, 최초 1회)
 
 1. [python.org](https://www.python.org/downloads/) 에서 Python 설치

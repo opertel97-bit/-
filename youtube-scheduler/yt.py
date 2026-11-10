@@ -14,6 +14,7 @@
   python yt.py linklist    스튜디오에서 직접 연결할 '관련 동영상' 체크리스트 만들기
   python yt.py calendar    롱폼 · 쇼츠 예약 달력을 브라우저로 보기
   python yt.py comment     공개된 예약 쇼츠에 채널 댓글 달기 (--execute 로 실제 실행)
+  python yt.py replies     답글 안 단 시청자 댓글 모으기 → Claude 가 답글 작성 → --import 로 달기
   python yt.py export      해시태그 없는 영상 목록 → Claude 대화창에 붙여넣기용 (무료)
   python yt.py import      Claude 가 준 해시태그(tags.txt)를 plan.csv 에 채우기
 """
@@ -1108,6 +1109,114 @@ def cmd_comment(cfg, args):
     run_comments(yt, rows, tz, datetime.now(tz), args.days, texts, args.execute)
 
 
+# ---------------------------------------------------------------- 명령: replies (시청자 댓글 반자동 답글)
+
+REPLIES_TODO_FILE = "replies_todo.txt"
+REPLIES_FILE = "replies.txt"
+DEFAULT_REPLY_FOOTER = "구독 좋아요 하이프까지 해주시면 더 나은 건강 정보로 보답드리겠습니다."
+
+
+def one_line(text: str) -> str:
+    return " ".join((text or "").split()).replace("|", "｜")
+
+
+def fetch_unanswered(yt, channel_id: str, now: datetime, days: int, max_pages: int = 5) -> list[dict]:
+    """채널 전체 영상의 최근 댓글 중, 시청자가 쓰고 채널이 아직 답글을 안 단 것 (최신순)."""
+    out, token = [], None
+    for _ in range(max_pages):  # 페이지당 할당량 1
+        resp = yt.commentThreads().list(
+            part="snippet,replies", allThreadsRelatedToChannelId=channel_id, order="time",
+            maxResults=100, textFormat="plainText", pageToken=token,
+        ).execute()
+        for th in resp.get("items", []):
+            top = th["snippet"]["topLevelComment"]
+            sn = top["snippet"]
+            if parse_api_time(sn["publishedAt"]) < now - timedelta(days=days):
+                return out
+            if sn.get("authorChannelId", {}).get("value") == channel_id:
+                continue  # 채널이 쓴 댓글
+            replies = (th.get("replies") or {}).get("comments", [])
+            if any(r["snippet"].get("authorChannelId", {}).get("value") == channel_id for r in replies):
+                continue  # 이미 답글 달았음
+            out.append({
+                "id": top["id"], "video_id": th["snippet"].get("videoId", ""),
+                "author": sn.get("authorDisplayName", ""), "text": sn.get("textDisplay", ""),
+            })
+        token = resp.get("nextPageToken")
+        if not token:
+            break
+    return out
+
+
+def parse_replies(text: str) -> list[tuple[str, str]]:
+    """'댓글ID|답글' 줄들. '#' 로 시작하는 줄과 빈 줄은 무시, 답글 속 \\n 은 줄바꿈."""
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "|" not in line:
+            continue
+        cid, reply = (x.strip() for x in line.split("|", 1))
+        if cid:
+            out.append((cid, reply.replace("\\n", "\n")))
+    return out
+
+
+def with_footer(reply: str, footer: str) -> str:
+    reply = reply.strip()
+    if not footer or footer in reply:
+        return reply
+    return f"{reply}\n\n{footer}"
+
+
+def cmd_replies(cfg, args):
+    tz = tz_of(cfg)
+    base = resolve(cfg, "plan_file").parent
+    footer = cfg.get("reply", {}).get("footer", DEFAULT_REPLY_FOOTER)
+    yt = get_service(cfg, need_comments=True)
+    if args.do_import:
+        src = base / REPLIES_FILE
+        if not src.exists() or not parse_replies(src.read_text(encoding="utf-8-sig")):
+            src.write_text("", encoding="utf-8")
+            print(f"{src.name} 를 메모장으로 엽니다. Claude 가 준 답글을 붙여넣고 저장(Ctrl+S)한 뒤 이 명령을 다시 실행하세요.")
+            open_in_notepad(src)
+            return
+        items = [(cid, with_footer(r, footer)) for cid, r in parse_replies(src.read_text(encoding="utf-8-sig")) if r != "-"]
+        for cid, r in items:
+            print(f"■ {cid}\n{r}\n")
+        print(f"총 {len(items)}개 답글 · 예상 할당량 {len(items) * 50} / 하루 10,000")
+        if not items:
+            return
+        if not args.yes and input("\n위 답글을 실제로 답니다. 계속할까요? (y/N) ").strip().lower() != "y":
+            print("취소했습니다.")
+            return
+        ok = 0
+        for cid, r in items:
+            try:
+                yt.comments().insert(part="snippet", body={"snippet": {"parentId": cid, "textOriginal": r}}).execute()
+                ok += 1
+            except Exception as e:
+                reason, msg = api_error_text(e)
+                print(f"  ✗ {cid}: {reason} {msg}")
+                if reason in ("quotaExceeded", "dailyLimitExceeded"):
+                    break
+        src.rename(src.with_name(f"replies_done_{datetime.now(tz):%Y%m%d-%H%M%S}.txt"))  # 두 번 달리지 않게 보관
+        print(f"답글 {ok}개 달림")
+        return
+
+    channel_id = yt.channels().list(part="id", mine=True).execute()["items"][0]["id"]
+    todo = fetch_unanswered(yt, channel_id, datetime.now(tz), args.days)
+    if not todo:
+        print(f"최근 {args.days}일 동안 답글이 필요한 시청자 댓글이 없습니다.")
+        return
+    titles = {vid: v["snippet"]["title"] for vid, v in get_videos(yt, list({t["video_id"] for t in todo})).items()}
+    lines = ["# 형식: 댓글ID|영상 제목|작성자|댓글 내용  → 전체 복사해서 Claude 에게 '답글 써줘' 라고 붙여넣으세요"]
+    lines += [f"{t['id']}|{one_line(titles.get(t['video_id'], ''))}|{one_line(t['author'])}|{one_line(t['text'])}" for t in todo]
+    out = base / REPLIES_TODO_FILE
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"답글 안 단 시청자 댓글 {len(todo)}개 → {out.name}")
+    open_in_notepad(out)
+
+
 # ---------------------------------------------------------------- 명령: export / import (Claude 대화창과 주고받기, 무료)
 
 EXPORT_FILE = "for_claude.txt"
@@ -1235,6 +1344,11 @@ def main(argv=None):
 
     sub.add_parser("calendar", help="롱폼·쇼츠 예약 달력을 브라우저로 보기")
 
+    rp = sub.add_parser("replies", help="답글 안 단 시청자 댓글 모으기 / --import 로 답글 달기")
+    rp.add_argument("--import", dest="do_import", action="store_true", help="replies.txt 의 답글을 실제로 달기")
+    rp.add_argument("--days", type=int, default=7, help="최근 며칠 동안의 댓글을 볼지 (기본 7)")
+    rp.add_argument("--yes", action="store_true", help="확인 질문 생략")
+
     cm = sub.add_parser("comment", help="공개된 예약 쇼츠에 채널 댓글 달기 (기본은 미리보기)")
     cm.add_argument("--execute", action="store_true", help="실제로 댓글 달기")
     cm.add_argument("--days", type=int, default=3, help="최근 며칠 안에 공개된 쇼츠까지 확인할지 (기본 3)")
@@ -1251,7 +1365,7 @@ def main(argv=None):
     handler = {
         "auth": cmd_auth, "fetch": cmd_fetch, "generate": cmd_generate, "schedule": cmd_schedule,
         "check": cmd_check, "apply": cmd_apply, "verify": cmd_verify, "linklist": cmd_linklist,
-        "export": cmd_export, "import": cmd_import, "calendar": cmd_calendar, "comment": cmd_comment,
+        "export": cmd_export, "import": cmd_import, "calendar": cmd_calendar, "comment": cmd_comment, "replies": cmd_replies,
     }[args.cmd]
     try:
         handler(cfg, args)
