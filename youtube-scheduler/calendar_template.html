@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>업로드 달력</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #6b7380; --line: #e3e6eb;
+    --long: #2563eb; --long-soft: #dbe6fd; --short: #e11d48; --short-soft: #fde0e6;
+    --today: #111827; --sun: #d92d20; --sat: #2563eb; --other-month: #f0f2f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --panel: #171b21; --text: #e7eaee; --muted: #8e97a4; --line: #2a3039;
+      --long: #6b9bff; --long-soft: #1c2c4d; --short: #ff6b86; --short-soft: #4a1d28;
+      --today: #e7eaee; --sun: #ff7a6e; --sat: #7aa5ff; --other-month: #12161b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
+  h1 { font-size: 22px; margin: 0; }
+  .updated { color: var(--muted); font-size: 13px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin: 18px 0; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  .stat b { display: block; font-size: 22px; margin-top: 2px; }
+  .stat span { color: var(--muted); font-size: 12.5px; }
+  .stat .next { display: block; color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .stat.long b { color: var(--long); } .stat.short b { color: var(--short); }
+  .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .nav { display: flex; align-items: center; gap: 6px; }
+  .nav button { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 8px;
+                padding: 6px 12px; font-size: 14px; cursor: pointer; }
+  .nav button:hover { border-color: var(--muted); }
+  .month { font-size: 18px; font-weight: 700; min-width: 120px; text-align: center; }
+  .filters { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+  .filters label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding: 5px 10px;
+                   border: 1px solid var(--line); border-radius: 999px; background: var(--panel); cursor: pointer; user-select: none; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .dot.long { background: var(--long); } .dot.short { background: var(--short); }
+  .dot.pub { background: transparent; border: 2px solid var(--muted); width: 10px; height: 10px; }
+  .cal { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  .dow, .grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  .dow div { padding: 8px; font-size: 12.5px; font-weight: 600; color: var(--muted); text-align: center; border-bottom: 1px solid var(--line); }
+  .dow div:first-child { color: var(--sun); } .dow div:last-child { color: var(--sat); }
+  .cell { min-height: 112px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 6px; }
+  .cell:nth-child(7n) { border-right: none; }
+  .cell.other { background: var(--other-month); }
+  .cell.other .num { opacity: .45; }
+  .num { font-size: 12.5px; font-weight: 600; margin-bottom: 4px; display: inline-block; min-width: 22px; height: 22px;
+         line-height: 22px; text-align: center; border-radius: 50%; }
+  .cell.sun .num { color: var(--sun); } .cell.sat .num { color: var(--sat); }
+  .cell.today .num { background: var(--today); color: var(--panel); }
+  .chip { display: block; font-size: 12px; line-height: 1.35; padding: 3px 6px; margin-top: 3px; border-radius: 6px;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-decoration: none; color: var(--text); }
+  .chip .t { font-weight: 700; margin-right: 4px; font-variant-numeric: tabular-nums; }
+  .chip.long { background: var(--long-soft); border-left: 3px solid var(--long); }
+  .chip.short { background: var(--short-soft); border-left: 3px solid var(--short); }
+  .chip.published { background: transparent; color: var(--muted); border-left-style: dashed; }
+  .chip:hover { filter: brightness(0.96); }
+  .more { font-size: 11.5px; color: var(--muted); margin-top: 3px; cursor: pointer; }
+  h2 { font-size: 17px; margin: 28px 0 10px; }
+  .agenda { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
+  .aday { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .aday:last-child { border-bottom: none; }
+  .adate { font-weight: 700; font-size: 14px; } .adate small { display: block; color: var(--muted); font-weight: 500; }
+  .aitem { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; text-decoration: none; color: var(--text); font-size: 14px; }
+  .aitem .tag { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 5px; flex: none; }
+  .aitem .tag.long { background: var(--long-soft); color: var(--long); } .aitem .tag.short { background: var(--short-soft); color: var(--short); }
+  .aitem .t { font-variant-numeric: tabular-nums; color: var(--muted); flex: none; width: 42px; }
+  .aitem:hover .title { text-decoration: underline; }
+  .empty { padding: 18px; color: var(--muted); font-size: 14px; }
+  .note { color: var(--muted); font-size: 12.5px; margin-top: 10px; }
+  @media (max-width: 680px) {
+    .cell { min-height: 64px; padding: 4px; }
+    .chip { font-size: 0; padding: 0; height: 6px; margin-top: 3px; border-left-width: 0; }
+    .chip.long { background: var(--long); } .chip.short { background: var(--short); }
+    .chip.published { opacity: .35; }
+    .more { font-size: 10px; }
+    .aday { grid-template-columns: 1fr; gap: 4px; }
+    .filters { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 id="title">업로드 달력</h1>
+    <div class="updated" id="updated"></div>
+  </header>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="toolbar">
+    <div class="nav">
+      <button id="prev" aria-label="이전 달">‹</button>
+      <div class="month" id="month"></div>
+      <button id="next" aria-label="다음 달">›</button>
+      <button id="today">오늘</button>
+    </div>
+    <div class="filters">
+      <label><input type="checkbox" id="f-long" checked><span class="dot long"></span>롱폼</label>
+      <label><input type="checkbox" id="f-short" checked><span class="dot short"></span>쇼츠</label>
+      <label><input type="checkbox" id="f-pub" checked><span class="dot pub"></span>이미 공개된 영상</label>
+    </div>
+  </div>
+
+  <div class="cal">
+    <div class="dow"><div>일</div><div>월</div><div>화</div><div>수</div><div>목</div><div>금</div><div>토</div></div>
+    <div class="grid" id="grid"></div>
+  </div>
+  <p class="note">색이 찬 칸은 <b>예약</b>, 점선은 <b>이미 공개</b>된 영상이에요. 영상을 누르면 스튜디오 편집 화면이 열립니다.</p>
+
+  <h2>다가오는 예약</h2>
+  <div class="agenda" id="agenda"></div>
+</div>
+
+<script>
+const DATA = /*__DATA__*/null;
+const WEEK = ["일", "월", "화", "수", "목", "금", "토"];
+const MAX_CHIPS = 4;
+const pad = n => String(n).padStart(2, "0");
+const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const studio = id => `https://studio.youtube.com/video/${encodeURIComponent(id)}/edit`;
+const label = k => (k === "long" ? "롱폼" : "쇼츠");
+
+const todayStr = DATA.today;
+let view = new Date(todayStr + "T00:00:00");
+view.setDate(1);
+const expanded = new Set();
+
+document.getElementById("title").textContent = `${DATA.channel} 업로드 달력`;
+document.getElementById("updated").textContent = `기준: ${DATA.generated}`;
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function visible(ev) {
+  if (ev.kind === "long" && !document.getElementById("f-long").checked) return false;
+  if (ev.kind === "short" && !document.getElementById("f-short").checked) return false;
+  if (ev.state === "published" && !document.getElementById("f-pub").checked) return false;
+  return true;
+}
+
+function renderStats() {
+  const box = document.getElementById("stats");
+  box.innerHTML = "";
+  const up = DATA.events.filter(e => e.state === "scheduled").sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  for (const kind of ["long", "short"]) {
+    const list = up.filter(e => e.kind === kind);
+    const s = el("div", `stat ${kind}`);
+    s.append(el("span", "", `예약된 ${label(kind)}`), el("b", "", `${list.length}개`));
+    if (list.length) {
+      const n = list[0];
+      s.append(el("span", "next", `다음: ${n.date.slice(5).replace("-", "/")} ${n.time} · ${n.title}`));
+    }
+    box.append(s);
+  }
+  for (const kind of ["long", "short"]) {
+    const s = el("div", "stat");
+    s.append(el("span", "", `예약 안 된 비공개 ${label(kind)}`), el("b", "", `${DATA.undated[kind] || 0}개`));
+    box.append(s);
+  }
+}
+
+function renderMonth() {
+  const grid = document.getElementById("grid");
+  grid.innerHTML = "";
+  document.getElementById("month").textContent = `${view.getFullYear()}년 ${view.getMonth() + 1}월`;
+  const byDate = {};
+  for (const ev of DATA.events) if (visible(ev)) (byDate[ev.date] ||= []).push(ev);
+  for (const list of Object.values(byDate)) list.sort((a, b) => a.time.localeCompare(b.time));
+
+  const start = new Date(view);
+  start.setDate(1 - view.getDay());
+  const weeks = Math.ceil((view.getDay() + new Date(view.getFullYear(), view.getMonth() + 1, 0).getDate()) / 7);
+  for (let i = 0; i < weeks * 7; i++) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    const key = ymd(d);
+    const cell = el("div", "cell");
+    if (d.getMonth() !== view.getMonth()) cell.classList.add("other");
+    if (d.getDay() === 0) cell.classList.add("sun");
+    if (d.getDay() === 6) cell.classList.add("sat");
+    if (key === todayStr) cell.classList.add("today");
+    cell.append(el("span", "num", String(d.getDate())));
+    const list = byDate[key] || [];
+    const shown = expanded.has(key) ? list : list.slice(0, MAX_CHIPS);
+    for (const ev of shown) {
+      const a = el("a", `chip ${ev.kind} ${ev.state}`);
+      a.href = studio(ev.id);
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.title = `${ev.date} ${ev.time} · ${label(ev.kind)} · ${ev.state === "scheduled" ? "예약" : "공개됨"}\n${ev.title}`;
+      a.append(el("span", "t", ev.time), document.createTextNode(ev.title));
+      cell.append(a);
+    }
+    if (list.length > shown.length) {
+      const m = el("div", "more", `+${list.length - shown.length}개 더 보기`);
+      m.onclick = () => { expanded.add(key); renderMonth(); };
+      cell.append(m);
+    }
+    grid.append(cell);
+  }
+}
+
+function renderAgenda() {
+  const box = document.getElementById("agenda");
+  box.innerHTML = "";
+  const up = DATA.events.filter(e => e.state === "scheduled" && visible(e))
+    .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  if (!up.length) { box.append(el("div", "empty", "예약된 영상이 없어요.")); return; }
+  const groups = {};
+  for (const ev of up) (groups[ev.date] ||= []).push(ev);
+  for (const [date, list] of Object.entries(groups)) {
+    const d = new Date(date + "T00:00:00");
+    const row = el("div", "aday");
+    const head = el("div", "adate", `${d.getMonth() + 1}월 ${d.getDate()}일`);
+    head.append(el("small", "", `${WEEK[d.getDay()]}요일${date === todayStr ? " · 오늘" : ""}`));
+    const items = el("div");
+    for (const ev of list) {
+      const a = el("a", "aitem");
+      a.href = studio(ev.id);
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.append(el("span", "t", ev.time), el("span", `tag ${ev.kind}`, label(ev.kind)), el("span", "title", ev.title));
+      items.append(a);
+    }
+    row.append(head, items);
+    box.append(row);
+  }
+}
+
+function renderAll() { renderStats(); renderMonth(); renderAgenda(); }
+document.getElementById("prev").onclick = () => { view.setMonth(view.getMonth() - 1); expanded.clear(); renderMonth(); };
+document.getElementById("next").onclick = () => { view.setMonth(view.getMonth() + 1); expanded.clear(); renderMonth(); };
+document.getElementById("today").onclick = () => { view = new Date(todayStr + "T00:00:00"); view.setDate(1); expanded.clear(); renderMonth(); };
+for (const id of ["f-long", "f-short", "f-pub"]) document.getElementById(id).onchange = () => { renderMonth(); renderAgenda(); };
+renderAll();
+</script>
+</body>
+</html>

@@ -298,5 +298,40 @@ zzz|plan 에 없음|#x|y
             self.assertFalse((Path(d) / "tags.txt").exists())  # 처리 후 보관용 이름으로 바뀜
 
 
+class CalendarTests(unittest.TestCase):
+    def vids(self):
+        def v(vid, title, dur, privacy, publish_at=None, published=None):
+            st = {"privacyStatus": privacy}
+            if publish_at:
+                st["publishAt"] = publish_at
+            return {"id": vid, "snippet": {"title": title, "publishedAt": published or "2026-11-01T00:00:00Z"},
+                    "status": st, "contentDetails": {"duration": dur}}
+        return {
+            "L1": v("L1", "롱폼 예약", "PT25M", "private", "2026-11-12T11:00:00Z"),
+            "S1": v("S1", "쇼츠 예약 </script>", "PT40S", "private", "2026-11-11T12:00:00Z"),
+            "P1": v("P1", "공개된 쇼츠", "PT30S", "public", published="2026-11-09T22:00:00Z"),
+            "D1": v("D1", "초안 롱폼", "PT10M", "private"),
+            "D2": v("D2", "초안 쇼츠", "PT20S", "private"),
+            "U1": v("U1", "일부공개", "PT20S", "unlisted"),
+        }
+
+    def test_events(self):
+        events, undated = yt.calendar_events(self.vids(), KST, 180)
+        got = [(e["id"], e["kind"], e["state"], e["date"], e["time"]) for e in events]
+        self.assertEqual(got, [
+            ("P1", "short", "published", "2026-11-10", "07:00"),
+            ("S1", "short", "scheduled", "2026-11-11", "21:00"),
+            ("L1", "long", "scheduled", "2026-11-12", "20:00"),
+        ])
+        self.assertEqual(undated, {"long": 1, "short": 1})
+
+    def test_render_escapes_script(self):
+        events, undated = yt.calendar_events(self.vids(), KST, 180)
+        html = yt.render_calendar(events, undated, "운동과 건강함", NOW)
+        self.assertNotIn("/*__DATA__*/null", html)
+        self.assertEqual(html.count("</script>"), 1)  # 제목 속 </script> 는 이스케이프됨
+        self.assertIn("운동과 건강함", html)
+
+
 if __name__ == "__main__":
     unittest.main()

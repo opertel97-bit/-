@@ -12,6 +12,7 @@
   python yt.py apply       변경 내용 미리보기 (--execute 를 붙여야 실제 반영)
   python yt.py verify      유튜브에 실제로 반영됐는지 다시 확인
   python yt.py linklist    스튜디오에서 직접 연결할 '관련 동영상' 체크리스트 만들기
+  python yt.py calendar    롱폼 · 쇼츠 예약 달력을 브라우저로 보기
   python yt.py export      해시태그 없는 영상 목록 → Claude 대화창에 붙여넣기용 (무료)
   python yt.py import      Claude 가 준 해시태그(tags.txt)를 plan.csv 에 채우기
 """
@@ -874,6 +875,64 @@ def cmd_linklist(cfg, args):
     print(f"{len(rows)}개 → {out}")
 
 
+# ---------------------------------------------------------------- 명령: calendar (예약 달력)
+
+CALENDAR_FILE = "calendar.html"
+
+
+def calendar_events(videos: dict, tz: ZoneInfo, max_short: int) -> tuple[list[dict], dict]:
+    """영상 목록 -> 달력 이벤트. 예약된 영상은 예약 시각, 공개된 영상은 공개 시각에 표시."""
+    events, undated = [], {"long": 0, "short": 0}
+    for vid, v in videos.items():
+        st, sn = v.get("status", {}), v.get("snippet", {})
+        dur = iso_duration_seconds(v.get("contentDetails", {}).get("duration", ""))
+        kind = "short" if dur <= max_short else "long"
+        privacy = st.get("privacyStatus")
+        if st.get("publishAt") and privacy != "public":
+            when, state = parse_api_time(st["publishAt"]), "scheduled"
+        elif privacy == "public" and sn.get("publishedAt"):
+            when, state = parse_api_time(sn["publishedAt"]), "published"
+        else:
+            if privacy == "private":
+                undated[kind] += 1
+            continue
+        local = when.astimezone(tz)
+        events.append({
+            "id": vid, "title": sn.get("title", ""), "kind": kind, "state": state,
+            "date": local.strftime("%Y-%m-%d"), "time": local.strftime("%H:%M"),
+        })
+    events.sort(key=lambda e: (e["date"], e["time"]))
+    return events, undated
+
+
+def render_calendar(events: list[dict], undated: dict, channel: str, now: datetime) -> str:
+    template = (BASE / "calendar_template.html").read_text(encoding="utf-8")
+    data = {
+        "channel": channel, "today": now.strftime("%Y-%m-%d"), "generated": now.strftime("%Y-%m-%d %H:%M"),
+        "events": events, "undated": undated,
+    }
+    payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")  # 제목에 </script> 가 있어도 안전
+    return template.replace("/*__DATA__*/null", payload)
+
+
+def cmd_calendar(cfg, args):
+    tz = tz_of(cfg)
+    yt = get_service(cfg, interactive=True)
+    channel_title, ids = list_upload_ids(yt)
+    videos = get_videos(yt, ids)
+    events, undated = calendar_events(videos, tz, int(cfg["shorts_max_seconds"]))
+    out = resolve(cfg, "plan_file").with_name(CALENDAR_FILE)
+    out.write_text(render_calendar(events, undated, channel_title, datetime.now(tz)), encoding="utf-8")
+    scheduled = [e for e in events if e["state"] == "scheduled"]
+    longs = sum(1 for e in scheduled if e["kind"] == "long")
+    print(f"예약된 롱폼 {longs}개 · 쇼츠 {len(scheduled) - longs}개 → {out.name} (브라우저로 열기)")
+    if sys.platform == "win32":
+        try:
+            os.startfile(str(out))
+        except OSError:
+            pass
+
+
 # ---------------------------------------------------------------- 명령: export / import (Claude 대화창과 주고받기, 무료)
 
 EXPORT_FILE = "for_claude.txt"
@@ -999,6 +1058,8 @@ def main(argv=None):
 
     sub.add_parser("linklist", help="관련 동영상 수동 연결 체크리스트")
 
+    sub.add_parser("calendar", help="롱폼·쇼츠 예약 달력을 브라우저로 보기")
+
     e = sub.add_parser("export", help="해시태그 없는 영상 목록을 Claude 에게 줄 형태로 만들기")
     e.add_argument("--all", action="store_true", help="이미 작성된 영상도 포함")
 
@@ -1010,7 +1071,7 @@ def main(argv=None):
     handler = {
         "auth": cmd_auth, "fetch": cmd_fetch, "generate": cmd_generate, "schedule": cmd_schedule,
         "check": cmd_check, "apply": cmd_apply, "verify": cmd_verify, "linklist": cmd_linklist,
-        "export": cmd_export, "import": cmd_import,
+        "export": cmd_export, "import": cmd_import, "calendar": cmd_calendar,
     }[args.cmd]
     try:
         handler(cfg, args)

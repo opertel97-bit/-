@@ -59,6 +59,15 @@ python yt.py apply --execute
 
 ---
 
+## 예약 달력 보기
+
+```bash
+python yt.py calendar
+```
+채널의 롱폼 · 쇼츠 예약 일정과 이미 공개된 영상을 달력으로 만들어 브라우저로 엽니다 (`calendar.html`). 실행할 때마다 유튜브의 최신 상태를 읽어오고, 영상을 누르면 스튜디오 편집 화면이 열립니다. 데이터는 내 PC 에만 저장됩니다.
+
+---
+
 ## 1. 설치 (윈도우 PC, 최초 1회)
 
 1. [python.org](https://www.python.org/downloads/) 에서 Python 설치
