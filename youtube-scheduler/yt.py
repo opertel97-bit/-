@@ -15,6 +15,7 @@
   python yt.py calendar    롱폼 · 쇼츠 예약 달력을 브라우저로 보기
   python yt.py comment     공개된 예약 쇼츠에 채널 댓글 달기 (--execute 로 실제 실행)
   python yt.py replies     답글 안 단 시청자 댓글 모으기 → Claude 가 답글 작성 → --import 로 달기
+  python yt.py transcript  내 영상 자막을 텍스트로 받기 (답글 근거용)
   python yt.py export      해시태그 없는 영상 목록 → Claude 대화창에 붙여넣기용 (무료)
   python yt.py import      Claude 가 준 해시태그(tags.txt)를 plan.csv 에 채우기
 """
@@ -1120,18 +1121,29 @@ def one_line(text: str) -> str:
     return " ".join((text or "").split()).replace("|", "｜")
 
 
-def fetch_unanswered(yt, channel_id: str, now: datetime, days: int, max_pages: int = 5) -> list[dict]:
-    """채널 전체 영상의 최근 댓글 중, 시청자가 쓰고 채널이 아직 답글을 안 단 것 (최신순)."""
+def video_id_from(text: str) -> str:
+    """유튜브 주소(watch?v= · youtu.be · shorts) 또는 영상 ID 에서 11자리 ID 추출."""
+    m = re.search(r"(?:v=|youtu\.be/|shorts/|live/)([\w-]{11})", text or "")
+    if m:
+        return m.group(1)
+    if re.fullmatch(r"[\w-]{11}", (text or "").strip()):
+        return text.strip()
+    raise UserError(f"영상 주소나 ID 를 알 수 없습니다: {text}")
+
+
+def fetch_unanswered(yt, channel_id: str, now: datetime, days: int, max_pages: int = 5, video_id: str | None = None) -> list[dict]:
+    """시청자가 쓰고 채널이 아직 답글을 안 단 댓글 (최신순).
+    video_id 가 없으면 채널 전체의 최근 days 일, 있으면 그 영상의 모든 댓글."""
     out, token = [], None
+    where = {"videoId": video_id} if video_id else {"allThreadsRelatedToChannelId": channel_id}
     for _ in range(max_pages):  # 페이지당 할당량 1
         resp = yt.commentThreads().list(
-            part="snippet,replies", allThreadsRelatedToChannelId=channel_id, order="time",
-            maxResults=100, textFormat="plainText", pageToken=token,
+            part="snippet,replies", order="time", maxResults=100, textFormat="plainText", pageToken=token, **where,
         ).execute()
         for th in resp.get("items", []):
             top = th["snippet"]["topLevelComment"]
             sn = top["snippet"]
-            if parse_api_time(sn["publishedAt"]) < now - timedelta(days=days):
+            if not video_id and parse_api_time(sn["publishedAt"]) < now - timedelta(days=days):
                 return out
             if sn.get("authorChannelId", {}).get("value") == channel_id:
                 continue  # 채널이 쓴 댓글
@@ -1161,17 +1173,70 @@ def parse_replies(text: str) -> list[tuple[str, str]]:
     return out
 
 
-def with_footer(reply: str, footer: str) -> str:
+def reply_footers(cfg: dict) -> list[str]:
+    rc = cfg.get("reply", {})
+    if rc.get("footers"):
+        return list(rc["footers"])
+    return [rc.get("footer", DEFAULT_REPLY_FOOTER)]
+
+
+def with_footer(reply: str, footer) -> str:
+    """footer 가 여러 개면 댓글마다 돌아가며 사용 (같은 문장 반복을 줄임)."""
     reply = reply.strip()
-    if not footer or footer in reply:
+    footers = footer if isinstance(footer, list) else [footer]
+    footers = [f for f in footers if f]
+    if not footers or any(f in reply for f in footers):
         return reply
-    return f"{reply}\n\n{footer}"
+    f = footers[zlib.crc32(reply.encode()) % len(footers)]
+    return f"{reply}\n\n{f}"
+
+
+def import_replies(yt, src: Path, footers: list[str], limit: int | None, delay: float, yes: bool, tz: ZoneInfo, sleep=None) -> int:
+    import time as _time
+    sleep = sleep or _time.sleep
+    pairs = parse_replies(src.read_text(encoding="utf-8-sig"))
+    batch = pairs[:limit] if limit else pairs
+    rest = pairs[len(batch):]
+    items = [(cid, with_footer(r, footers)) for cid, r in batch if r != "-"]
+    for cid, r in items:
+        print(f"■ {cid}\n{r}\n")
+    print(f"이번에 {len(items)}개 답글 · 남은 것 {len(rest)}개 · 예상 할당량 {len(items) * 50} / 하루 10,000")
+    if not items and not rest:
+        return 0
+    if items and not yes and input("\n위 답글을 실제로 답니다. 계속할까요? (y/N) ").strip().lower() != "y":
+        print("취소했습니다.")
+        return 0
+    ok, failed_at = 0, None
+    for n, (cid, r) in enumerate(items):
+        try:
+            yt.comments().insert(part="snippet", body={"snippet": {"parentId": cid, "textOriginal": r}}).execute()
+            ok += 1
+            print(f"  ✓ {ok}/{len(items)}")
+        except Exception as e:
+            reason, msg = api_error_text(e)
+            print(f"  ✗ {cid}: {reason} {msg}")
+            if reason in ("quotaExceeded", "dailyLimitExceeded"):
+                failed_at = n
+                break
+        if delay and n + 1 < len(items):
+            sleep(delay)  # 한꺼번에 몰아서 달지 않도록 간격
+    done_ids = {cid for cid, _ in items[: failed_at if failed_at is not None else len(items)]} | {cid for cid, r in batch if r == "-"}
+    remaining = [(cid, r) for cid, r in pairs if cid not in done_ids]
+    stamp = f"{datetime.now(tz):%Y%m%d-%H%M%S}"
+    src.with_name(f"replies_done_{stamp}.txt").write_text(
+        "\n".join(f"{cid}|{r}" for cid, r in batch if cid in done_ids) + "\n", encoding="utf-8")
+    if remaining:
+        src.write_text("\n".join(f"{cid}|{r.replace(chr(10), chr(92) + 'n')}" for cid, r in remaining) + "\n", encoding="utf-8")
+        print(f"답글 {ok}개 달림. 남은 {len(remaining)}개는 {src.name} 에 그대로 있으니 내일 같은 명령으로 이어서 다세요.")
+    else:
+        src.unlink()
+        print(f"답글 {ok}개 달림. 모두 끝났습니다.")
+    return ok
 
 
 def cmd_replies(cfg, args):
     tz = tz_of(cfg)
     base = resolve(cfg, "plan_file").parent
-    footer = cfg.get("reply", {}).get("footer", DEFAULT_REPLY_FOOTER)
     yt = get_service(cfg, need_comments=True)
     if args.do_import:
         src = base / REPLIES_FILE
@@ -1180,40 +1245,57 @@ def cmd_replies(cfg, args):
             print(f"{src.name} 를 메모장으로 엽니다. Claude 가 준 답글을 붙여넣고 저장(Ctrl+S)한 뒤 이 명령을 다시 실행하세요.")
             open_in_notepad(src)
             return
-        items = [(cid, with_footer(r, footer)) for cid, r in parse_replies(src.read_text(encoding="utf-8-sig")) if r != "-"]
-        for cid, r in items:
-            print(f"■ {cid}\n{r}\n")
-        print(f"총 {len(items)}개 답글 · 예상 할당량 {len(items) * 50} / 하루 10,000")
-        if not items:
-            return
-        if not args.yes and input("\n위 답글을 실제로 답니다. 계속할까요? (y/N) ").strip().lower() != "y":
-            print("취소했습니다.")
-            return
-        ok = 0
-        for cid, r in items:
-            try:
-                yt.comments().insert(part="snippet", body={"snippet": {"parentId": cid, "textOriginal": r}}).execute()
-                ok += 1
-            except Exception as e:
-                reason, msg = api_error_text(e)
-                print(f"  ✗ {cid}: {reason} {msg}")
-                if reason in ("quotaExceeded", "dailyLimitExceeded"):
-                    break
-        src.rename(src.with_name(f"replies_done_{datetime.now(tz):%Y%m%d-%H%M%S}.txt"))  # 두 번 달리지 않게 보관
-        print(f"답글 {ok}개 달림")
+        import_replies(yt, src, reply_footers(cfg), args.limit, args.delay, args.yes, tz)
         return
 
     channel_id = yt.channels().list(part="id", mine=True).execute()["items"][0]["id"]
-    todo = fetch_unanswered(yt, channel_id, datetime.now(tz), args.days)
+    vid = video_id_from(args.video) if args.video else None
+    todo = fetch_unanswered(yt, channel_id, datetime.now(tz), args.days, max_pages=20 if vid else 5, video_id=vid)
     if not todo:
-        print(f"최근 {args.days}일 동안 답글이 필요한 시청자 댓글이 없습니다.")
+        print("답글이 필요한 시청자 댓글이 없습니다." if vid else f"최근 {args.days}일 동안 답글이 필요한 시청자 댓글이 없습니다.")
         return
-    titles = {vid: v["snippet"]["title"] for vid, v in get_videos(yt, list({t["video_id"] for t in todo})).items()}
+    titles = {v: x["snippet"]["title"] for v, x in get_videos(yt, list({t["video_id"] for t in todo})).items()}
     lines = ["# 형식: 댓글ID|영상 제목|작성자|댓글 내용  → 전체 복사해서 Claude 에게 '답글 써줘' 라고 붙여넣으세요"]
     lines += [f"{t['id']}|{one_line(titles.get(t['video_id'], ''))}|{one_line(t['author'])}|{one_line(t['text'])}" for t in todo]
     out = base / REPLIES_TODO_FILE
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"답글 안 단 시청자 댓글 {len(todo)}개 → {out.name}")
+    open_in_notepad(out)
+
+
+# ---------------------------------------------------------------- 명령: transcript (내 영상 자막 → 텍스트)
+
+
+def srt_to_text(srt: str) -> str:
+    out = []
+    for line in srt.splitlines():
+        line = line.strip()
+        if not line or line.isdigit() or "-->" in line:
+            continue
+        line = re.sub(r"<[^>]+>", "", line)
+        if not out or out[-1] != line:  # 자동 자막의 중복 줄 제거
+            out.append(line)
+    return "\n".join(out)
+
+
+def cmd_transcript(cfg, args):
+    vid = video_id_from(args.video)
+    yt = get_service(cfg, need_comments=True)
+    tracks = yt.captions().list(part="snippet", videoId=vid).execute().get("items", [])
+    if not tracks:
+        raise UserError("이 영상에 자막이 없습니다. 스튜디오 → 자막에서 자동 자막이 만들어졌는지 확인해주세요.")
+    # 한국어 · 직접 올린 자막 우선, 없으면 자동 자막
+    tracks.sort(key=lambda t: (t["snippet"].get("language", "") != "ko", t["snippet"].get("trackKind") == "asr"))
+    title = get_videos(yt, [vid]).get(vid, {}).get("snippet", {}).get("title", vid)
+    try:
+        data = yt.captions().download_media(id=tracks[0]["id"], tfmt="srt").execute()
+    except Exception as e:
+        reason, msg = api_error_text(e)
+        raise UserError(f"자막을 받지 못했습니다 ({reason or msg}). 스튜디오 → 해당 영상 → 자막 → 점 3개 → 다운로드(.srt) 로 받아 내용을 붙여넣어 주세요.")
+    text = srt_to_text(data.decode("utf-8", "replace") if isinstance(data, bytes) else str(data))
+    out = resolve(cfg, "plan_file").with_name(f"transcript_{vid}.txt")
+    out.write_text(f"# {title}\n{text}\n", encoding="utf-8")
+    print(f"자막 {len(text)}자 → {out.name}")
     open_in_notepad(out)
 
 
@@ -1348,6 +1430,12 @@ def main(argv=None):
     rp.add_argument("--import", dest="do_import", action="store_true", help="replies.txt 의 답글을 실제로 달기")
     rp.add_argument("--days", type=int, default=7, help="최근 며칠 동안의 댓글을 볼지 (기본 7)")
     rp.add_argument("--yes", action="store_true", help="확인 질문 생략")
+    rp.add_argument("--video", help="이 영상(주소 또는 ID)의 모든 댓글을 모으기")
+    rp.add_argument("--limit", type=int, help="--import 때 이번에 달 답글 수 (나머지는 다음에)")
+    rp.add_argument("--delay", type=float, default=4, help="답글 사이 간격(초), 기본 4")
+
+    tr = sub.add_parser("transcript", help="내 영상 자막을 텍스트로 받기 (답글 근거용)")
+    tr.add_argument("video", help="영상 주소 또는 ID")
 
     cm = sub.add_parser("comment", help="공개된 예약 쇼츠에 채널 댓글 달기 (기본은 미리보기)")
     cm.add_argument("--execute", action="store_true", help="실제로 댓글 달기")
@@ -1365,7 +1453,7 @@ def main(argv=None):
     handler = {
         "auth": cmd_auth, "fetch": cmd_fetch, "generate": cmd_generate, "schedule": cmd_schedule,
         "check": cmd_check, "apply": cmd_apply, "verify": cmd_verify, "linklist": cmd_linklist,
-        "export": cmd_export, "import": cmd_import, "calendar": cmd_calendar, "comment": cmd_comment, "replies": cmd_replies,
+        "export": cmd_export, "import": cmd_import, "calendar": cmd_calendar, "comment": cmd_comment, "replies": cmd_replies, "transcript": cmd_transcript,
     }[args.cmd]
     try:
         handler(cfg, args)

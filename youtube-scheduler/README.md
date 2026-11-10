@@ -105,6 +105,8 @@ python yt.py replies --import
 ```
 처음엔 빈 `replies.txt` 가 열립니다. Claude 의 답글을 붙여넣고 저장한 뒤 다시 실행하면 미리보기 후 한 번에 답니다. 모든 답글 끝에 "구독 좋아요 하이프까지 해주시면 더 나은 건강 정보로 보답드리겠습니다." 가 자동으로 붙습니다 (`config.yaml` 의 `reply: {footer: "..."}` 로 변경).
 
+특정 영상의 댓글 전부에 답글을 달려면 `python yt.py replies --video 영상주소`. 답글이 많으면 `python yt.py replies --import --limit 70` 처럼 나눠 달고 (남은 건 replies.txt 에 남아 다음에 이어짐), 답글 사이엔 기본 4초 간격을 둡니다. 답글 근거가 될 영상 자막은 `python yt.py transcript 영상주소` 로 받습니다.
+
 답글 원칙: 공감 댓글엔 공감, 전문적인 질문은 제공된 롱폼(원장님 말씀) 내용 안에서만 답하고 그 밖의 개인 증상·약·진단 질문은 전문의 상담을 권합니다.
 
 ---

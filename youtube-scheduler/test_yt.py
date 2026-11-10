@@ -509,18 +509,68 @@ class ReplyTests(unittest.TestCase):
             orig = yt.get_service
             yt.get_service = lambda *a, **k: fake
             try:
-                yt.cmd_replies(cfg, SimpleNamespace(do_import=False, days=30, yes=True))
+                yt.cmd_replies(cfg, SimpleNamespace(do_import=False, days=30, yes=True, video=None, limit=None, delay=0))
                 todo = (Path(d) / "replies_todo.txt").read_text(encoding="utf-8").splitlines()
                 self.assertEqual(todo[1], "c1|췌장암 ｜ 신호|viewer1|저도 ｜ 그래요 정말")
-                yt.cmd_replies(cfg, SimpleNamespace(do_import=True, days=7, yes=True))  # 빈 replies.txt 생성
+                yt.cmd_replies(cfg, SimpleNamespace(do_import=True, days=7, yes=True, video=None, limit=None, delay=0))  # 빈 replies.txt 생성
                 self.assertEqual(fake.posted, [])
                 (Path(d) / "replies.txt").write_text("c1|공감합니다. 원장님께서는 꾸준한 관리가 중요하다고 하셨어요.\nc9|-\n", encoding="utf-8")
-                yt.cmd_replies(cfg, SimpleNamespace(do_import=True, days=7, yes=True))
+                yt.cmd_replies(cfg, SimpleNamespace(do_import=True, days=7, yes=True, video=None, limit=None, delay=0))
             finally:
                 yt.get_service = orig
             self.assertEqual(fake.posted, [{"parentId": "c1", "textOriginal":
                 "공감합니다. 원장님께서는 꾸준한 관리가 중요하다고 하셨어요.\n\n" + yt.DEFAULT_REPLY_FOOTER}])
             self.assertFalse((Path(d) / "replies.txt").exists())  # 두 번 달리지 않게 보관용 이름으로 바뀜
+
+
+class ReplyBatchTests(unittest.TestCase):
+    def test_video_mode_ignores_age(self):
+        t = ReplyTests.thread
+        fake = ReplyTests.Fake([[t("old", "v1", "viewer", "예전 댓글", "2025-01-01T00:00:00Z")]])
+        self.assertEqual(yt.fetch_unanswered(fake, "MYCH", NOW, 7), [])
+        self.assertEqual([x["id"] for x in yt.fetch_unanswered(fake, "MYCH", NOW, 7, video_id="v1")], ["old"])
+
+    def test_limit_keeps_rest_for_next_time(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "replies.txt"
+            src.write_text("a|첫째 답글\\n둘째 줄\nb|-\nc|셋째 답글\nd|넷째 답글\n", encoding="utf-8")
+            fake = ReplyTests.Fake([[]])
+            sleeps = []
+            ok = yt.import_replies(fake, src, ["끝인사1", "끝인사2"], limit=2, delay=3, yes=True, tz=KST, sleep=sleeps.append)
+            self.assertEqual(ok, 1)
+            self.assertEqual(fake.posted[0]["parentId"], "a")
+            self.assertTrue(fake.posted[0]["textOriginal"].startswith("첫째 답글\n둘째 줄\n\n끝인사"))
+            self.assertEqual(sleeps, [])  # 1개뿐이라 간격 없음
+            self.assertEqual(yt.parse_replies(src.read_text(encoding="utf-8")), [("c", "셋째 답글"), ("d", "넷째 답글")])
+            ok = yt.import_replies(fake, src, ["끝인사"], limit=None, delay=3, yes=True, tz=KST, sleep=sleeps.append)
+            self.assertEqual((ok, sleeps), (2, [3]))
+            self.assertFalse(src.exists())
+            self.assertEqual([p["parentId"] for p in fake.posted], ["a", "c", "d"])
+
+    def test_footer_not_duplicated(self):
+        self.assertEqual(yt.with_footer("고마워요\n\n끝인사", ["끝인사"]), "고마워요\n\n끝인사")
+
+    def test_transcript(self):
+        class Fake:
+            def captions(self):
+                return SimpleNamespace(
+                    list=lambda **kw: SimpleNamespace(execute=lambda: {"items": [
+                        {"id": "asr", "snippet": {"language": "ko", "trackKind": "asr"}},
+                        {"id": "en", "snippet": {"language": "en", "trackKind": "standard"}},
+                        {"id": "ko", "snippet": {"language": "ko", "trackKind": "standard"}}]}),
+                    download_media=lambda id, tfmt: SimpleNamespace(execute=lambda: (
+                        "1\n00:00:01,000 --> 00:00:02,000\n" + id + " 자막\n").encode()))
+
+            def videos(self):
+                return SimpleNamespace(list=lambda part, id: SimpleNamespace(execute=lambda: {"items": [{"id": id, "snippet": {"title": "롱폼"}}]}))
+        with tempfile.TemporaryDirectory() as d:
+            orig = yt.get_service
+            yt.get_service = lambda *a, **k: Fake()
+            try:
+                yt.cmd_transcript({"plan_file": str(Path(d) / "plan.csv")}, SimpleNamespace(video="https://youtu.be/DJPMelNUU-w"))
+            finally:
+                yt.get_service = orig
+            self.assertEqual((Path(d) / "transcript_DJPMelNUU-w.txt").read_text(encoding="utf-8"), "# 롱폼\nko 자막\n")
 
 
 if __name__ == "__main__":
