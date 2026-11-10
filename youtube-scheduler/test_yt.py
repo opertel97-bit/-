@@ -333,5 +333,52 @@ class CalendarTests(unittest.TestCase):
         self.assertIn("운동과 건강함", html)
 
 
+class UploadListTests(unittest.TestCase):
+    class Fake:
+        def __init__(self, playlist_pages, search_pages, search_fail=False):
+            self.pl, self.sp, self.fail, self.search_calls = playlist_pages, search_pages, search_fail, 0
+
+        def channels(self):
+            return SimpleNamespace(list=lambda **kw: SimpleNamespace(execute=lambda: {"items": [
+                {"snippet": {"title": "운동과 건강함"}, "contentDetails": {"relatedPlaylists": {"uploads": "UU1"}}}]}))
+
+        def playlistItems(self):
+            def lst(pageToken=None, **kw):
+                i = int(pageToken or 0)
+                resp = {"items": [{"contentDetails": {"videoId": v}} for v in self.pl[i]]}
+                if i + 1 < len(self.pl):
+                    resp["nextPageToken"] = str(i + 1)
+                return SimpleNamespace(execute=lambda: resp)
+            return SimpleNamespace(list=lst)
+
+        def search(self):
+            def lst(pageToken=None, **kw):
+                self.search_calls += 1
+                if self.fail:
+                    def boom():
+                        e = Exception("x")
+                        e.content = b'{"error":{"message":"quota","errors":[{"reason":"quotaExceeded"}]}}'
+                        raise e
+                    return SimpleNamespace(execute=boom)
+                i = int(pageToken or 0)
+                resp = {"items": [{"id": {"videoId": v}} for v in self.sp[i]]}
+                if i + 1 < len(self.sp):
+                    resp["nextPageToken"] = str(i + 1)
+                return SimpleNamespace(execute=lambda: resp)
+            return SimpleNamespace(list=lst)
+
+    def test_dedupes_and_adds_missing_recent_videos(self):
+        fake = self.Fake([["a", "b", "a"], ["c", "b"]], [["NEW1", "a", "NEW2"], ["b", "c"], ["NEVER"]])
+        title, ids = yt.list_upload_ids(fake)
+        self.assertEqual(title, "운동과 건강함")
+        self.assertEqual(ids, ["a", "b", "c", "NEW1", "NEW2"])
+        self.assertEqual(fake.search_calls, 2)  # 새 영상이 없는 페이지에서 멈춤
+
+    def test_search_failure_keeps_upload_list(self):
+        fake = self.Fake([["a", "a", "b"]], [], search_fail=True)
+        _, ids = yt.list_upload_ids(fake)
+        self.assertEqual(ids, ["a", "b"])
+
+
 if __name__ == "__main__":
     unittest.main()

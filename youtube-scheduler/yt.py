@@ -247,7 +247,33 @@ def list_upload_ids(yt) -> tuple[str, list[str]]:
         ids += [it["contentDetails"]["videoId"] for it in resp.get("items", [])]
         token = resp.get("nextPageToken")
         if not token:
-            return channel_title, ids
+            break
+    ids = list(dict.fromkeys(ids))  # 업로드 목록이 같은 영상을 중복으로 줄 때가 있음
+    # 업로드 목록은 최근 예약 · 비공개 영상을 빠뜨리는 경우가 있어 '내 영상 검색'으로 보충
+    try:
+        ids += search_my_video_ids(yt, set(ids))
+    except Exception as e:  # 검색이 실패해도 업로드 목록만으로 계속 진행
+        reason, msg = api_error_text(e)
+        print(f"※ 최근 영상 보충 검색 실패 ({reason or msg}). 최근 예약 영상 일부가 빠질 수 있습니다.")
+    return channel_title, ids
+
+
+SEARCH_MAX_PAGES = 10  # 페이지당 할당량 100
+
+
+def search_my_video_ids(yt, known: set[str]) -> list[str]:
+    """최근 영상부터 검색해 업로드 목록에 없는 영상 ID 를 찾음. 새 영상이 안 나오는 페이지가 나오면 멈춤."""
+    extra, token = [], None
+    for _ in range(SEARCH_MAX_PAGES):
+        resp = yt.search().list(part="id", forMine=True, type="video", order="date", maxResults=50, pageToken=token).execute()
+        page = [it["id"]["videoId"] for it in resp.get("items", []) if it.get("id", {}).get("videoId")]
+        new = [i for i in page if i not in known]
+        extra += new
+        known.update(new)
+        token = resp.get("nextPageToken")
+        if not new or not token:
+            break
+    return extra
 
 
 def get_videos(yt, ids: list[str]) -> dict[str, dict]:
