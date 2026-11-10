@@ -68,6 +68,31 @@ python yt.py calendar
 
 ---
 
+## 쇼츠가 공개되면 자동으로 댓글 달기
+
+예약해 둔 쇼츠가 공개되면 채널 이름으로 "풀영상은 쇼츠 하단에서 확인하실 수 있어요 👇" 같은 댓글을 답니다. 공식 API 를 사용합니다.
+
+```bash
+python yt.py auth
+```
+댓글 권한 때문에 처음 한 번만 다시 로그인합니다.
+
+```bash
+python yt.py comment
+```
+미리보기입니다. `--execute` 를 붙이면 실제로 댓글을 답니다. 이미 채널 댓글이 있는 영상은 건너뜁니다.
+
+```bash
+setup_comment_task.bat
+```
+윈도우 작업 스케줄러에 등록해서 매일 08:10, 18:10, 21:10 에 자동으로 실행합니다 (그 시간에 PC 가 켜져 있어야 함, 기록은 `comment_log.txt`). 끄려면 `remove_comment_task.bat`.
+
+- 문구는 기본 3가지를 영상마다 돌아가며 씁니다 (같은 문구 반복은 스팸으로 보일 수 있음). 바꾸려면 `config.yaml` 에 `comment: {texts: ["문구1", "문구2"]}`.
+- 영상마다 다르게 하려면 plan.csv 의 `comment` 열에 문구를 적고, 댓글을 달지 않으려면 `-` 를 적습니다.
+- 댓글 고정은 API 로 안 되므로 필요하면 스튜디오에서 직접 고정하세요. 쇼츠 댓글 속 링크는 클릭되지 않습니다.
+
+---
+
 ## 1. 설치 (윈도우 PC, 최초 1회)
 
 1. [python.org](https://www.python.org/downloads/) 에서 Python 설치

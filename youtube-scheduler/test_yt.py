@@ -408,5 +408,55 @@ class RobustListingTests(unittest.TestCase):
         self.assertEqual([(e["state"], e["date"], e["time"], e["kind"]) for e in events], [("scheduled", "2026-11-30", "19:00", "long")])
 
 
+class CommentTests(unittest.TestCase):
+    class Fake:
+        def __init__(self, videos, comments):
+            self.v, self.c, self.posted = videos, comments, []
+
+        def channels(self):
+            return SimpleNamespace(list=lambda **kw: SimpleNamespace(execute=lambda: {"items": [{"id": "MYCH"}]}))
+
+        def videos(self):
+            return SimpleNamespace(list=lambda part, id: SimpleNamespace(execute=lambda: {
+                "items": [dict(self.v[i], id=i) for i in id.split(",") if i in self.v]}))
+
+        def commentThreads(self):
+            def lst(videoId, **kw):
+                items = [{"snippet": {"topLevelComment": {"snippet": {"authorChannelId": {"value": a}}}}} for a in self.c.get(videoId, [])]
+                return SimpleNamespace(execute=lambda: {"items": items})
+
+            def ins(part, body):
+                return SimpleNamespace(execute=lambda: self.posted.append(body["snippet"]))
+            return SimpleNamespace(list=lst, insert=ins)
+
+    def test_comments_only_new_public_videos_once(self):
+        pub = {"status": {"privacyStatus": "public"}}
+        rows = [
+            row("A", publish_at="2026-11-05 08:00"),             # 공개, 댓글 없음 -> 기본 문구
+            row("B", publish_at="2026-11-05 11:00"),             # 공개, 이미 채널 댓글 -> 건너뜀
+            row("C", publish_at="2026-11-05 09:00", comment="풀영상은 11/30 공개 예정이에요!"),  # 직접 쓴 문구
+            row("D", publish_at="2026-11-05 10:00", comment="-"),  # 댓글 안 담
+            row("E", publish_at="2026-11-05 11:30"),             # 시간은 지났지만 아직 비공개 -> 다음에
+            row("F", publish_at="2026-11-06 08:00"),             # 아직 미래
+            row("G", publish_at="2026-10-20 08:00"),             # 너무 오래됨
+        ]
+        fake = self.Fake({"A": pub, "B": pub, "C": pub, "D": pub, "E": {"status": {"privacyStatus": "private"}}},
+                         {"B": ["someone", "MYCH"], "A": ["viewer"]})
+        texts = ["문구1", "문구2"]
+        stats = yt.run_comments(fake, rows, KST, NOW, 3, texts, execute=False)
+        self.assertEqual(fake.posted, [])  # 미리보기에선 안 담
+        stats = yt.run_comments(fake, rows, KST, NOW, 3, texts, execute=True)
+        got = {(p["videoId"], p["topLevelComment"]["snippet"]["textOriginal"]) for p in fake.posted}
+        self.assertEqual({v for v, _ in got}, {"A", "C"})
+        self.assertIn(("C", "풀영상은 11/30 공개 예정이에요!"), got)
+        self.assertIn(dict(got)["A"], texts)
+        self.assertEqual((stats["posted"], stats["done"], stats["waiting"]), (2, 1, 1))
+
+    def test_scope_check(self):
+        self.assertTrue(yt.has_scopes([yt.SCOPE_MANAGE], need_comments=False))
+        self.assertFalse(yt.has_scopes([yt.SCOPE_MANAGE], need_comments=True))
+        self.assertTrue(yt.has_scopes(yt.ALL_SCOPES, need_comments=True))
+
+
 if __name__ == "__main__":
     unittest.main()

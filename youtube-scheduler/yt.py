@@ -13,6 +13,7 @@
   python yt.py verify      유튜브에 실제로 반영됐는지 다시 확인
   python yt.py linklist    스튜디오에서 직접 연결할 '관련 동영상' 체크리스트 만들기
   python yt.py calendar    롱폼 · 쇼츠 예약 달력을 브라우저로 보기
+  python yt.py comment     공개된 예약 쇼츠에 채널 댓글 달기 (--execute 로 실제 실행)
   python yt.py export      해시태그 없는 영상 목록 → Claude 대화창에 붙여넣기용 (무료)
   python yt.py import      Claude 가 준 해시태그(tags.txt)를 plan.csv 에 채우기
 """
@@ -24,6 +25,7 @@ import json
 import os
 import re
 import sys
+import zlib
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -49,8 +51,9 @@ COLUMNS = [
     "publish_at",
     "apply_status",
     "studio_link",
+    "comment",
 ]
-USER_COLUMNS = {"memo", "related_longform", "new_title", "new_description", "new_tags", "publish_at", "apply_status"}
+USER_COLUMNS = {"memo", "related_longform", "new_title", "new_description", "new_tags", "publish_at", "apply_status", "comment"}
 
 TITLE_MAX = 100
 DESCRIPTION_MAX_BYTES = 5000
@@ -191,7 +194,17 @@ def normalize_hashtag(h: str) -> str:
 # ---------------------------------------------------------------- 유튜브 API
 
 
-def get_service(cfg: dict, interactive: bool = True):
+SCOPE_MANAGE = "https://www.googleapis.com/auth/youtube"
+SCOPE_COMMENT = "https://www.googleapis.com/auth/youtube.force-ssl"  # 댓글 달기에 필요
+ALL_SCOPES = [SCOPE_MANAGE, SCOPE_COMMENT]
+
+
+def has_scopes(granted, need_comments: bool) -> bool:
+    need = ALL_SCOPES if need_comments else [SCOPE_MANAGE]
+    return set(need) <= set(granted or [])
+
+
+def get_service(cfg: dict, interactive: bool = True, need_comments: bool = False):
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
@@ -200,12 +213,14 @@ def get_service(cfg: dict, interactive: bool = True):
     except ImportError:
         raise UserError("구글 라이브러리가 없습니다. 먼저 `pip install -r requirements.txt` 를 실행해주세요.")
 
-    scopes = ["https://www.googleapis.com/auth/youtube"]
     token_path = resolve(cfg, "token_file")
     secret_path = resolve(cfg, "client_secret_file")
     creds = None
     if token_path.exists():
-        creds = Credentials.from_authorized_user_file(str(token_path), scopes)
+        creds = Credentials.from_authorized_user_file(str(token_path))  # 저장된 권한 범위 그대로 읽음
+        if not has_scopes(creds.scopes, need_comments):
+            print("※ 댓글 권한이 추가되어 구글 로그인을 한 번 더 해야 합니다.")
+            creds = None
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
@@ -214,10 +229,10 @@ def get_service(cfg: dict, interactive: bool = True):
                 creds = None
         if not creds or not creds.valid:
             if not interactive:
-                raise UserError("구글 로그인이 필요합니다. `python yt.py auth` 를 먼저 실행해주세요.")
+                raise UserError("구글 로그인이 필요합니다. cmd 에서 `python yt.py auth` 를 먼저 실행해주세요.")
             if not secret_path.exists():
                 raise UserError(f"{secret_path.name} 이 없습니다. README 의 'Google Cloud 설정' 을 따라 받은 파일을 이 폴더에 두세요.")
-            flow = InstalledAppFlow.from_client_secrets_file(str(secret_path), scopes)
+            flow = InstalledAppFlow.from_client_secrets_file(str(secret_path), ALL_SCOPES)
             creds = flow.run_local_server(port=0)
         token_path.write_text(creds.to_json(), encoding="utf-8")
     return build("youtube", "v3", credentials=creds, cache_discovery=False)
@@ -314,7 +329,7 @@ def get_videos(yt, ids: list[str]) -> dict[str, dict]:
 
 
 def cmd_auth(cfg, args):
-    yt = get_service(cfg)
+    yt = get_service(cfg, need_comments=True)
     title, ids = list_upload_ids(yt)
     print(f"연결 완료: 채널 '{title}' (업로드 {len(ids)}개 확인)")
 
@@ -987,6 +1002,112 @@ def cmd_calendar(cfg, args):
             pass
 
 
+# ---------------------------------------------------------------- 명령: comment (공개된 쇼츠에 채널 댓글)
+
+DEFAULT_COMMENTS = [
+    "풀영상은 쇼츠 하단에서 확인하실 수 있어요 👇",
+    "전체 영상은 쇼츠 하단 영상에서 보실 수 있어요 👇",
+    "더 자세한 내용은 쇼츠 하단 풀영상에서 확인해보세요 🙂",
+]
+
+
+def pick_comment(row: dict, texts: list[str]) -> str | None:
+    """plan.csv 의 comment 열: 비우면 기본 문구(영상마다 돌아가며), '-' 면 댓글 안 담, 그 외엔 그 문구."""
+    custom = (row.get("comment") or "").strip()
+    if custom == "-":
+        return None
+    if custom:
+        return custom
+    return texts[zlib.crc32(row["video_id"].encode()) % len(texts)]  # 같은 문구 반복을 줄여 스팸 판정 예방
+
+
+def comment_candidates(rows: list[dict], tz: ZoneInfo, now: datetime, days: int) -> list[dict]:
+    """예약 시간이 최근 days 일 안에 지난 쇼츠 (PC 가 꺼져 있던 동안 놓친 것도 다음 실행 때 처리)."""
+    out = []
+    for r in rows:
+        if r["is_short"] != "Y" or not r["publish_at"]:
+            continue
+        try:
+            t = parse_local(r["publish_at"], tz)
+        except ValueError:
+            continue
+        if now - timedelta(days=days) <= t <= now:
+            out.append(r)
+    return out
+
+
+def channel_commented(yt, video_id: str, channel_id: str) -> bool:
+    token = None
+    for _ in range(3):  # 새 쇼츠는 댓글이 적어 보통 1페이지면 충분
+        resp = yt.commentThreads().list(part="snippet", videoId=video_id, maxResults=100, pageToken=token).execute()
+        for it in resp.get("items", []):
+            author = it["snippet"]["topLevelComment"]["snippet"].get("authorChannelId", {}).get("value")
+            if author == channel_id:
+                return True
+        token = resp.get("nextPageToken")
+        if not token:
+            return False
+    return False
+
+
+def run_comments(yt, rows, tz, now, days, texts, execute) -> dict:
+    stats = {"posted": 0, "failed": 0, "waiting": 0, "done": 0}
+    cands = comment_candidates(rows, tz, now, days)
+    if not cands:
+        print(f"최근 {days}일 안에 공개 시간이 지난 예약 쇼츠가 없습니다.")
+        return stats
+    channel_id = yt.channels().list(part="id", mine=True).execute()["items"][0]["id"]
+    videos = get_videos(yt, [r["video_id"] for r in cands])
+    todo = []
+    for r in cands:
+        text = pick_comment(r, texts)
+        if text is None:
+            continue
+        v = videos.get(r["video_id"])
+        if not v or v.get("status", {}).get("privacyStatus") != "public":
+            stats["waiting"] += 1  # 아직 공개 전 (유튜브 반영이 몇 분 늦을 수 있음)
+            continue
+        try:
+            if channel_commented(yt, r["video_id"], channel_id):
+                stats["done"] += 1
+                continue
+        except Exception as e:
+            reason, msg = api_error_text(e)
+            print(f"  - 건너뜀 ({reason or msg}): {r['current_title']}")
+            continue
+        todo.append((r, text))
+    for r, text in todo:
+        print(f"  {'→' if execute else '(미리보기)'} {r['current_title']}  :  {text}")
+    if not todo:
+        print(f"새로 댓글 달 영상 없음 (이미 댓글 있음 {stats['done']}개 · 아직 공개 전 {stats['waiting']}개)")
+        return stats
+    if not execute:
+        print(f"\n[미리보기] {len(todo)}개 영상에 위 댓글을 답니다. 실제로 달기: python yt.py comment --execute")
+        return stats
+    for r, text in todo:
+        body = {"snippet": {"videoId": r["video_id"], "topLevelComment": {"snippet": {"textOriginal": text}}}}
+        try:
+            yt.commentThreads().insert(part="snippet", body=body).execute()
+            stats["posted"] += 1
+        except Exception as e:
+            reason, msg = api_error_text(e)
+            stats["failed"] += 1
+            print(f"  ✗ {r['current_title']}: {reason} {msg}")
+            if reason in ("quotaExceeded", "dailyLimitExceeded"):
+                break
+    print(f"댓글 {stats['posted']}개 달림, 실패 {stats['failed']}개")
+    return stats
+
+
+def cmd_comment(cfg, args):
+    tz = tz_of(cfg)
+    rows = load_plan(resolve(cfg, "plan_file"))
+    texts = cfg.get("comment", {}).get("texts") or DEFAULT_COMMENTS
+    yt = get_service(cfg, interactive=not args.auto, need_comments=True)
+    print(f"[{datetime.now(tz):%Y-%m-%d %H:%M}] 공개된 쇼츠 댓글 확인")
+    run_comments(yt, rows, tz, datetime.now(tz), args.days, texts, args.execute)
+
+
 # ---------------------------------------------------------------- 명령: export / import (Claude 대화창과 주고받기, 무료)
 
 EXPORT_FILE = "for_claude.txt"
@@ -1114,6 +1235,11 @@ def main(argv=None):
 
     sub.add_parser("calendar", help="롱폼·쇼츠 예약 달력을 브라우저로 보기")
 
+    cm = sub.add_parser("comment", help="공개된 예약 쇼츠에 채널 댓글 달기 (기본은 미리보기)")
+    cm.add_argument("--execute", action="store_true", help="실제로 댓글 달기")
+    cm.add_argument("--days", type=int, default=3, help="최근 며칠 안에 공개된 쇼츠까지 확인할지 (기본 3)")
+    cm.add_argument("--auto", action="store_true", help="작업 스케줄러용: 로그인 창을 띄우지 않음")
+
     e = sub.add_parser("export", help="해시태그 없는 영상 목록을 Claude 에게 줄 형태로 만들기")
     e.add_argument("--all", action="store_true", help="이미 작성된 영상도 포함")
 
@@ -1125,7 +1251,7 @@ def main(argv=None):
     handler = {
         "auth": cmd_auth, "fetch": cmd_fetch, "generate": cmd_generate, "schedule": cmd_schedule,
         "check": cmd_check, "apply": cmd_apply, "verify": cmd_verify, "linklist": cmd_linklist,
-        "export": cmd_export, "import": cmd_import, "calendar": cmd_calendar,
+        "export": cmd_export, "import": cmd_import, "calendar": cmd_calendar, "comment": cmd_comment,
     }[args.cmd]
     try:
         handler(cfg, args)
