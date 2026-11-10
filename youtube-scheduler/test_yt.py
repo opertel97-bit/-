@@ -371,13 +371,41 @@ class UploadListTests(unittest.TestCase):
         fake = self.Fake([["a", "b", "a"], ["c", "b"]], [["NEW1", "a", "NEW2"], ["b", "c"], ["NEVER"]])
         title, ids = yt.list_upload_ids(fake)
         self.assertEqual(title, "운동과 건강함")
-        self.assertEqual(ids, ["a", "b", "c", "NEW1", "NEW2"])
-        self.assertEqual(fake.search_calls, 2)  # 새 영상이 없는 페이지에서 멈춤
+        self.assertEqual(ids, ["a", "b", "c", "NEW1", "NEW2", "NEVER"])
+        self.assertEqual(fake.search_calls, 3)  # 누락이 흩어져 있으므로 검색은 끝까지
 
     def test_search_failure_keeps_upload_list(self):
         fake = self.Fake([["a", "a", "b"]], [], search_fail=True)
         _, ids = yt.list_upload_ids(fake)
         self.assertEqual(ids, ["a", "b"])
+
+
+class RobustListingTests(unittest.TestCase):
+    def test_all_my_videos_requeries_previously_seen_ids(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = Path(d) / "plan.csv"
+            yt.save_plan([row("OLD_SHORT")], plan)
+            (Path(d) / "videos_cache.json").write_text(json.dumps({"OLD_LONG": {}, "GONE": {}}), encoding="utf-8")
+            asked = []
+            orig_list, orig_get = yt.list_upload_ids, yt.get_videos
+            yt.list_upload_ids = lambda y: ("ch", ["a"])
+            def fake_get(y, ids):
+                asked.extend(ids)
+                return {i: {"id": i} for i in ids if i != "GONE"}
+            yt.get_videos = fake_get
+            try:
+                title, videos = yt.all_my_videos(None, {"plan_file": str(plan)})
+            finally:
+                yt.list_upload_ids, yt.get_videos = orig_list, orig_get
+            self.assertEqual(asked, ["a", "OLD_SHORT", "OLD_LONG", "GONE"])
+            self.assertEqual(set(videos), {"a", "OLD_SHORT", "OLD_LONG"})
+
+    def test_premiere_counts_as_scheduled(self):
+        v = {"P": {"snippet": {"title": "프리미어 롱폼", "liveBroadcastContent": "upcoming", "publishedAt": "2026-11-09T00:00:00Z"},
+                   "status": {"privacyStatus": "public"}, "contentDetails": {"duration": "PT30M"},
+                   "liveStreamingDetails": {"scheduledStartTime": "2026-11-30T10:00:00Z"}}}
+        events, _ = yt.calendar_events(v, KST, 180)
+        self.assertEqual([(e["state"], e["date"], e["time"], e["kind"]) for e in events], [("scheduled", "2026-11-30", "19:00", "long")])
 
 
 if __name__ == "__main__":

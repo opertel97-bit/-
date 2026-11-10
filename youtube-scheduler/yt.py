@@ -258,11 +258,12 @@ def list_upload_ids(yt) -> tuple[str, list[str]]:
     return channel_title, ids
 
 
-SEARCH_MAX_PAGES = 10  # 페이지당 할당량 100
+SEARCH_MAX_PAGES = 12  # 페이지당 50개 · 할당량 100 (최대 600개)
 
 
 def search_my_video_ids(yt, known: set[str]) -> list[str]:
-    """최근 영상부터 검색해 업로드 목록에 없는 영상 ID 를 찾음. 새 영상이 안 나오는 페이지가 나오면 멈춤."""
+    """'내 영상 검색'을 끝까지 넘기며 업로드 목록에 없는 영상 ID 를 모음.
+    업로드 목록이 페이지마다 중복 · 누락이 생겨 빠진 영상이 여기저기 흩어져 있으므로 중간에 멈추지 않음."""
     extra, token = [], None
     for _ in range(SEARCH_MAX_PAGES):
         resp = yt.search().list(part="id", forMine=True, type="video", order="date", maxResults=50, pageToken=token).execute()
@@ -271,16 +272,39 @@ def search_my_video_ids(yt, known: set[str]) -> list[str]:
         extra += new
         known.update(new)
         token = resp.get("nextPageToken")
-        if not new or not token:
+        if not page or not token:
             break
     return extra
+
+
+def local_known_ids(cfg: dict) -> list[str]:
+    """이전에 읽어온 영상 ID (plan.csv · videos_cache.json). 업로드 목록에서 빠져도 다시 조회하기 위함."""
+    plan_path = resolve(cfg, "plan_file")
+    ids = [r["video_id"] for r in load_plan(plan_path)]
+    cache = plan_path.with_name("videos_cache.json")
+    if cache.exists():
+        try:
+            ids += list(json.loads(cache.read_text(encoding="utf-8")))
+        except (ValueError, OSError):
+            pass
+    return ids
+
+
+def all_my_videos(yt, cfg: dict) -> tuple[str, dict[str, dict]]:
+    """채널의 모든 영상 정보. 업로드 목록 + 내 영상 검색 + 이전에 읽은 영상을 합쳐 누락을 줄임."""
+    channel_title, ids = list_upload_ids(yt)
+    seen = set(ids)
+    local = [i for i in dict.fromkeys(local_known_ids(cfg)) if i not in seen]
+    videos = get_videos(yt, ids + local)  # 삭제된 영상은 응답에서 자연히 빠짐
+    print(f"영상 {len(videos)}개 확인")
+    return channel_title, videos
 
 
 def get_videos(yt, ids: list[str]) -> dict[str, dict]:
     out = {}
     for i in range(0, len(ids), 50):
         chunk = ids[i : i + 50]
-        resp = yt.videos().list(part="snippet,status,contentDetails", id=",".join(chunk), maxResults=50).execute()
+        resp = yt.videos().list(part="snippet,status,contentDetails,liveStreamingDetails", id=",".join(chunk)).execute()
         for v in resp.get("items", []):
             out[v["id"]] = v
     return out
@@ -298,8 +322,8 @@ def cmd_auth(cfg, args):
 def cmd_fetch(cfg, args):
     tz = tz_of(cfg)
     yt = get_service(cfg, interactive=True)
-    channel_title, ids = list_upload_ids(yt)
-    videos = get_videos(yt, ids)
+    channel_title, videos = all_my_videos(yt, cfg)
+    ids = list(videos)
     plan_path = resolve(cfg, "plan_file")
     rows = load_plan(plan_path)
     by_id = {r["video_id"]: r for r in rows}
@@ -914,8 +938,11 @@ def calendar_events(videos: dict, tz: ZoneInfo, max_short: int) -> tuple[list[di
         dur = iso_duration_seconds(v.get("contentDetails", {}).get("duration", ""))
         kind = "short" if dur <= max_short else "long"
         privacy = st.get("privacyStatus")
+        premiere = (v.get("liveStreamingDetails") or {}).get("scheduledStartTime")
         if st.get("publishAt") and privacy != "public":
             when, state = parse_api_time(st["publishAt"]), "scheduled"
+        elif sn.get("liveBroadcastContent") == "upcoming" and premiere:  # 최초 공개(프리미어) 예약
+            when, state = parse_api_time(premiere), "scheduled"
         elif privacy == "public" and sn.get("publishedAt"):
             when, state = parse_api_time(sn["publishedAt"]), "published"
         else:
@@ -944,8 +971,9 @@ def render_calendar(events: list[dict], undated: dict, channel: str, now: dateti
 def cmd_calendar(cfg, args):
     tz = tz_of(cfg)
     yt = get_service(cfg, interactive=True)
-    channel_title, ids = list_upload_ids(yt)
-    videos = get_videos(yt, ids)
+    channel_title, videos = all_my_videos(yt, cfg)
+    cache = resolve(cfg, "plan_file").with_name("videos_cache.json")
+    cache.write_text(json.dumps(videos, ensure_ascii=False, indent=1), encoding="utf-8")  # 다음 조회 때 누락 보충용
     events, undated = calendar_events(videos, tz, int(cfg["shorts_max_seconds"]))
     out = resolve(cfg, "plan_file").with_name(CALENDAR_FILE)
     out.write_text(render_calendar(events, undated, channel_title, datetime.now(tz)), encoding="utf-8")
