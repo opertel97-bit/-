@@ -1150,6 +1150,9 @@ def fetch_unanswered(yt, channel_id: str, now: datetime, days: int, max_pages: i
             replies = (th.get("replies") or {}).get("comments", [])
             if any(r["snippet"].get("authorChannelId", {}).get("value") == channel_id for r in replies):
                 continue  # 이미 답글 달았음
+            # 답글이 많은 댓글은 일부만 함께 오므로, 전부 확인해서 채널 답글이 있는지 봄
+            if th["snippet"].get("totalReplyCount", 0) > len(replies) and channel_replied(yt, top["id"], channel_id):
+                continue
             out.append({
                 "id": top["id"], "video_id": th["snippet"].get("videoId", ""),
                 "author": sn.get("authorDisplayName", ""), "text": sn.get("textDisplay", ""),
@@ -1222,7 +1225,7 @@ def import_replies(yt, src: Path, footers: list[str], limit: int | None, delay: 
     if items and not yes and input("\n위 답글을 실제로 답니다. 계속할까요? (y/N) ").strip().lower() != "y":
         print("취소했습니다.")
         return 0
-    ok, failed_at = 0, None
+    ok, failed_at, failed = 0, None, set()
     channel_id = yt.channels().list(part="id", mine=True).execute()["items"][0]["id"] if items else None
     for n, (cid, r) in enumerate(items):
         try:
@@ -1235,18 +1238,21 @@ def import_replies(yt, src: Path, footers: list[str], limit: int | None, delay: 
         except Exception as e:
             reason, msg = api_error_text(e)
             print(f"  ✗ {cid}: {reason} {msg}")
+            failed.add(cid)  # 실패한 답글은 파일에 남겨 다음에 다시 시도
             if reason in ("quotaExceeded", "dailyLimitExceeded"):
                 failed_at = n
                 break
         if delay and n + 1 < len(items):
             sleep(delay)  # 한꺼번에 몰아서 달지 않도록 간격
-    done_ids = {cid for cid, _ in items[: failed_at if failed_at is not None else len(items)]} | {cid for cid, r in batch if is_no_post(r)}
+    done_ids = ({cid for cid, _ in items[: failed_at if failed_at is not None else len(items)]} - failed) | {cid for cid, r in batch if is_no_post(r)}
     remaining = [(cid, r) for cid, r in pairs if cid not in done_ids]
     stamp = f"{datetime.now(tz):%Y%m%d-%H%M%S}"
     src.with_name(f"replies_done_{stamp}.txt").write_text(
         "\n".join(f"{cid}|{r}" for cid, r in batch if cid in done_ids) + "\n", encoding="utf-8")
     if remaining:
         src.write_text("\n".join(f"{cid}|{r.replace(chr(10), chr(92) + 'n')}" for cid, r in remaining) + "\n", encoding="utf-8")
+        if failed:
+            print(f"실패 {len(failed)}개는 {src.name} 에 남겨뒀습니다. 위 ✗ 사유를 확인해주세요.")
         print(f"답글 {ok}개 달림. 남은 {len(remaining)}개는 {src.name} 에 그대로 있으니 내일 같은 명령으로 이어서 다세요.")
     else:
         src.unlink()

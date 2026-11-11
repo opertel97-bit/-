@@ -632,5 +632,39 @@ class ReplyOverrideTests(unittest.TestCase):
             self.assertEqual(yt.parse_replies(src.read_text(encoding="utf-8")), [("b", "둘")])
 
 
+class ReplyRobustnessTests(unittest.TestCase):
+    def test_failed_reply_stays_in_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "replies.txt"
+            src.write_text("a|하나\nb|둘\n", encoding="utf-8")
+            fake = ReplyTests.Fake([[]])
+            real_insert = fake.comments
+
+            def comments():
+                c = real_insert()
+                def ins(part, body):
+                    if body["snippet"]["parentId"] == "a":
+                        def boom():
+                            e = Exception("x")
+                            e.content = b'{"error":{"message":"bad","errors":[{"reason":"processingFailure"}]}}'
+                            raise e
+                        return SimpleNamespace(execute=boom)
+                    return c.insert(part, body)
+                return SimpleNamespace(insert=ins, list=c.list)
+            fake.comments = comments
+            ok = yt.import_replies(fake, src, [""], limit=None, delay=0, yes=True, tz=KST)
+            self.assertEqual(ok, 1)
+            self.assertEqual(yt.parse_replies(src.read_text(encoding="utf-8")), [("a", "하나")])
+
+    def test_thread_with_many_replies_checks_all(self):
+        t = ReplyTests.thread("c1", "v1", "viewer", "질문", "2026-11-05T00:00:00Z", replies=["x"] * 5)
+        t["snippet"]["totalReplyCount"] = 9
+        fake = ReplyTests.Fake([[t]])
+        fake.replied = {"c1"}  # 6번째 이후 답글에 채널 답글이 있음
+        self.assertEqual(yt.fetch_unanswered(fake, "MYCH", NOW, 7, video_id="v1"), [])
+        fake.replied = set()
+        self.assertEqual(len(yt.fetch_unanswered(fake, "MYCH", NOW, 7, video_id="v1")), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
