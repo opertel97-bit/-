@@ -1191,15 +1191,30 @@ def with_footer(reply: str, footer) -> str:
     return f"{reply}\n\n{f}"
 
 
+NO_POST = {"-", "SKIP", "REVIEW"}  # 답글 안 담 (REVIEW 는 운영자가 직접 판단)
+
+
+def is_no_post(reply: str) -> bool:
+    return reply.strip().upper() in NO_POST
+
+
+def channel_replied(yt, parent_id: str, channel_id: str) -> bool:
+    resp = yt.comments().list(part="snippet", parentId=parent_id, maxResults=100).execute()
+    return any(c["snippet"].get("authorChannelId", {}).get("value") == channel_id for c in resp.get("items", []))
+
+
 def import_replies(yt, src: Path, footers: list[str], limit: int | None, delay: float, yes: bool, tz: ZoneInfo, sleep=None) -> int:
     import time as _time
     sleep = sleep or _time.sleep
     pairs = parse_replies(src.read_text(encoding="utf-8-sig"))
     batch = pairs[:limit] if limit else pairs
     rest = pairs[len(batch):]
-    items = [(cid, with_footer(r, footers)) for cid, r in batch if r != "-"]
+    items = [(cid, with_footer(r, footers)) for cid, r in batch if not is_no_post(r)]
+    review = [cid for cid, r in batch if r.strip().upper() == "REVIEW"]
     for cid, r in items:
         print(f"■ {cid}\n{r}\n")
+    if review:
+        print(f"직접 확인할 댓글 {len(review)}개 (답글 안 담): {', '.join(review)}")
     print(f"이번에 {len(items)}개 답글 · 남은 것 {len(rest)}개 · 예상 할당량 {len(items) * 50} / 하루 10,000")
     if not items and not rest:
         return 0
@@ -1207,8 +1222,12 @@ def import_replies(yt, src: Path, footers: list[str], limit: int | None, delay: 
         print("취소했습니다.")
         return 0
     ok, failed_at = 0, None
+    channel_id = yt.channels().list(part="id", mine=True).execute()["items"][0]["id"] if items else None
     for n, (cid, r) in enumerate(items):
         try:
+            if channel_replied(yt, cid, channel_id):  # 이미 답글 단 댓글은 다시 달지 않음 (파일을 새로 붙여넣어도 안전)
+                print(f"  - 이미 답글 있음, 건너뜀: {cid}")
+                continue
             yt.comments().insert(part="snippet", body={"snippet": {"parentId": cid, "textOriginal": r}}).execute()
             ok += 1
             print(f"  ✓ {ok}/{len(items)}")
@@ -1220,7 +1239,7 @@ def import_replies(yt, src: Path, footers: list[str], limit: int | None, delay: 
                 break
         if delay and n + 1 < len(items):
             sleep(delay)  # 한꺼번에 몰아서 달지 않도록 간격
-    done_ids = {cid for cid, _ in items[: failed_at if failed_at is not None else len(items)]} | {cid for cid, r in batch if r == "-"}
+    done_ids = {cid for cid, _ in items[: failed_at if failed_at is not None else len(items)]} | {cid for cid, r in batch if is_no_post(r)}
     remaining = [(cid, r) for cid, r in pairs if cid not in done_ids]
     stamp = f"{datetime.now(tz):%Y%m%d-%H%M%S}"
     src.with_name(f"replies_done_{stamp}.txt").write_text(

@@ -485,8 +485,13 @@ class ReplyTests(unittest.TestCase):
                 return SimpleNamespace(execute=lambda: resp)
             return SimpleNamespace(list=lst)
 
+        replied = ()  # 이미 채널 답글이 달린 댓글 ID
+
         def comments(self):
-            return SimpleNamespace(insert=lambda part, body: SimpleNamespace(execute=lambda: self.posted.append(body["snippet"])))
+            def lst(parentId, **kw):
+                items = [{"snippet": {"authorChannelId": {"value": "MYCH"}}}] if parentId in self.replied else []
+                return SimpleNamespace(execute=lambda: {"items": items})
+            return SimpleNamespace(insert=lambda part, body: SimpleNamespace(execute=lambda: self.posted.append(body["snippet"])), list=lst)
 
     def test_fetch_unanswered(self):
         t = self.thread
@@ -601,6 +606,19 @@ class ReplyAutoTests(unittest.TestCase):
                 builtins.input = orig_input
             self.assertEqual([p["parentId"] for p in fake.posted], ["a", "b"])
             self.assertEqual(yt.parse_replies((Path(d) / "replies.txt").read_text(encoding="utf-8")), [("c", "셋")])
+
+
+class ReplySafetyTests(unittest.TestCase):
+    def test_skips_already_replied_and_review(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "replies.txt"
+            src.write_text("a|이미 단 답글\nb|REVIEW\nc|새 답글\nd|skip\n", encoding="utf-8")
+            fake = ReplyTests.Fake([[]])
+            fake.replied = {"a"}
+            ok = yt.import_replies(fake, src, [""], limit=None, delay=0, yes=True, tz=KST)
+            self.assertEqual(ok, 1)
+            self.assertEqual([p["parentId"] for p in fake.posted], ["c"])
+            self.assertEqual(fake.posted[0]["textOriginal"], "새 답글")  # 끝 멘트 비활성화(빈 문자열)
 
 
 if __name__ == "__main__":
