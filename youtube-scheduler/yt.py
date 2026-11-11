@@ -1206,7 +1206,8 @@ def channel_replied(yt, parent_id: str, channel_id: str) -> bool:
 def import_replies(yt, src: Path, footers: list[str], limit: int | None, delay: float, yes: bool, tz: ZoneInfo, sleep=None) -> int:
     import time as _time
     sleep = sleep or _time.sleep
-    pairs = parse_replies(src.read_text(encoding="utf-8-sig"))
+    # 같은 댓글이 여러 번 있으면 아래에 새로 붙여넣은 답글로 대체 (자리는 처음 위치 유지)
+    pairs = list(dict(parse_replies(src.read_text(encoding="utf-8-sig"))).items())
     batch = pairs[:limit] if limit else pairs
     rest = pairs[len(batch):]
     items = [(cid, with_footer(r, footers)) for cid, r in batch if not is_no_post(r)]

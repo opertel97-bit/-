@@ -621,5 +621,16 @@ class ReplySafetyTests(unittest.TestCase):
             self.assertEqual(fake.posted[0]["textOriginal"], "새 답글")  # 끝 멘트 비활성화(빈 문자열)
 
 
+class ReplyOverrideTests(unittest.TestCase):
+    def test_later_line_replaces_skip(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "replies.txt"
+            src.write_text("a|-\nb|둘\na|새로 쓴 답글\n", encoding="utf-8")
+            fake = ReplyTests.Fake([[]])
+            yt.import_replies(fake, src, [""], limit=1, delay=0, yes=True, tz=KST)
+            self.assertEqual(fake.posted, [{"parentId": "a", "textOriginal": "새로 쓴 답글"}])
+            self.assertEqual(yt.parse_replies(src.read_text(encoding="utf-8")), [("b", "둘")])
+
+
 if __name__ == "__main__":
     unittest.main()
