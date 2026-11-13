@@ -975,33 +975,73 @@ def calendar_events(videos: dict, tz: ZoneInfo, max_short: int) -> tuple[list[di
     return events, undated
 
 
-def render_calendar(events: list[dict], undated: dict, channel: str, now: datetime) -> str:
+def render_calendar(events: list[dict], undated: dict, channel: str, now: datetime, refresh: int = 0) -> str:
     template = (BASE / "calendar_template.html").read_text(encoding="utf-8")
     data = {
-        "channel": channel, "today": now.strftime("%Y-%m-%d"), "generated": now.strftime("%Y-%m-%d %H:%M"),
-        "events": events, "undated": undated,
+        "channel": channel, "today": now.strftime("%Y-%m-%d"), "generated": now.strftime("%Y-%m-%d %H:%M:%S" if refresh else "%Y-%m-%d %H:%M"),
+        "events": events, "undated": undated, "refresh": refresh,
     }
     payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")  # 제목에 </script> 가 있어도 안전
     return template.replace("/*__DATA__*/null", payload)
 
 
-def cmd_calendar(cfg, args):
+def write_calendar(cfg, videos: dict, channel_title: str, refresh: int = 0) -> tuple[Path, int, int]:
     tz = tz_of(cfg)
+    events, undated = calendar_events(videos, tz, int(cfg["shorts_max_seconds"]))
+    out = resolve(cfg, "plan_file").with_name(CALENDAR_FILE)
+    out.write_text(render_calendar(events, undated, channel_title, datetime.now(tz), refresh), encoding="utf-8")
+    scheduled = [e for e in events if e["state"] == "scheduled"]
+    longs = sum(1 for e in scheduled if e["kind"] == "long")
+    return out, longs, len(scheduled) - longs
+
+
+def watch_calendar(cfg, yt, videos: dict, channel_title: str, every: int, sleep=None, rounds: int | None = None) -> None:
+    """이미 아는 영상들의 예약 정보만 다시 받아 달력을 갱신 (1회에 영상 50개당 할당량 1)."""
+    import time as _time
+    sleep = sleep or _time.sleep
+    ids = list(videos)
+    tz = tz_of(cfg)
+    last = None
+    n = 0
+    while rounds is None or n < rounds:
+        sleep(every)
+        n += 1
+        try:
+            fresh = get_videos(yt, ids)
+        except Exception as e:  # 잠깐의 네트워크 오류로 멈추지 않도록
+            reason, msg = api_error_text(e)
+            print(f"[{datetime.now(tz):%H:%M:%S}] 갱신 실패 ({reason or msg}) · 다음 차례에 다시 시도합니다")
+            continue
+        videos.clear()
+        videos.update(fresh)  # 끝낼 때 마지막 상태로 달력을 고정하기 위해
+        _, longs, shorts = write_calendar(cfg, fresh, channel_title, every)
+        sig = json.dumps({k: (v.get("status", {}).get("publishAt"), v.get("status", {}).get("privacyStatus"), v.get("snippet", {}).get("title")) for k, v in fresh.items()}, sort_keys=True)
+        if sig != last and last is not None:
+            print(f"[{datetime.now(tz):%H:%M:%S}] 변경 반영 · 예약된 롱폼 {longs}개 · 쇼츠 {shorts}개")
+        last = sig
+
+
+def cmd_calendar(cfg, args):
     yt = get_service(cfg, interactive=True)
     channel_title, videos = all_my_videos(yt, cfg)
     cache = resolve(cfg, "plan_file").with_name("videos_cache.json")
     cache.write_text(json.dumps(videos, ensure_ascii=False, indent=1), encoding="utf-8")  # 다음 조회 때 누락 보충용
-    events, undated = calendar_events(videos, tz, int(cfg["shorts_max_seconds"]))
-    out = resolve(cfg, "plan_file").with_name(CALENDAR_FILE)
-    out.write_text(render_calendar(events, undated, channel_title, datetime.now(tz)), encoding="utf-8")
-    scheduled = [e for e in events if e["state"] == "scheduled"]
-    longs = sum(1 for e in scheduled if e["kind"] == "long")
-    print(f"예약된 롱폼 {longs}개 · 쇼츠 {len(scheduled) - longs}개 → {out.name} (브라우저로 열기)")
+    every = max(30, int(args.every)) if getattr(args, "watch", False) else 0
+    out, longs, shorts = write_calendar(cfg, videos, channel_title, every)
+    print(f"예약된 롱폼 {longs}개 · 쇼츠 {shorts}개 → {out.name} (브라우저로 열기)")
     if sys.platform == "win32":
         try:
             os.startfile(str(out))
         except OSError:
             pass
+    if every:
+        print(f"실시간 모드: {every}초마다 스튜디오에서 바꾼 예약을 달력에 반영합니다. 이 창은 켜두세요 (끝내려면 Ctrl+C).")
+        print("※ 새로 올린 영상은 끝내고 다시 실행해야 들어옵니다.")
+        try:
+            watch_calendar(cfg, yt, videos, channel_title, every)
+        except KeyboardInterrupt:
+            write_calendar(cfg, videos, channel_title, 0)  # 자동 새로고침 끄기
+            print("실시간 모드를 끝냈습니다.")
 
 
 # ---------------------------------------------------------------- 명령: comment (공개된 쇼츠에 채널 댓글)
@@ -1457,7 +1497,9 @@ def main(argv=None):
 
     sub.add_parser("linklist", help="관련 동영상 수동 연결 체크리스트")
 
-    sub.add_parser("calendar", help="롱폼·쇼츠 예약 달력을 브라우저로 보기")
+    cal = sub.add_parser("calendar", help="롱폼·쇼츠 예약 달력을 브라우저로 보기")
+    cal.add_argument("--watch", action="store_true", help="켜두면 스튜디오에서 바꾼 예약이 달력에 자동 반영")
+    cal.add_argument("--every", type=int, default=60, help="--watch 갱신 간격(초), 기본 60 · 최소 30")
 
     rp = sub.add_parser("replies", help="답글 안 단 시청자 댓글 모으기 / --import 로 답글 달기")
     rp.add_argument("--import", dest="do_import", action="store_true", help="replies.txt 의 답글을 실제로 달기")

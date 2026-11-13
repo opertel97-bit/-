@@ -1,5 +1,7 @@
 """오프라인 테스트 (유튜브/Claude 에 실제로 접속하지 않음).  실행: python -m unittest test_yt"""
+import io
 import json
+from contextlib import redirect_stdout
 import tempfile
 import unittest
 from datetime import date, datetime, time
@@ -331,6 +333,52 @@ class CalendarTests(unittest.TestCase):
         self.assertNotIn("/*__DATA__*/null", html)
         self.assertEqual(html.count("</script>"), 1)  # 제목 속 </script> 는 이스케이프됨
         self.assertIn("운동과 건강함", html)
+
+
+class CalendarWatchTests(unittest.TestCase):
+    def test_watch_picks_up_studio_changes(self):
+        base = CalendarTests().vids()
+        changed = json.loads(json.dumps(base))
+        changed["D1"]["status"]["publishAt"] = "2026-11-20T09:00:00Z"  # 스튜디오에서 새로 예약
+        calls = []
+
+        class Fake:
+            def videos(self):
+                def lst(**kw):
+                    calls.append(kw["id"])
+                    ids = kw["id"].split(",")
+                    return SimpleNamespace(execute=lambda: {"items": [changed[i] for i in ids if i in changed]})
+                return SimpleNamespace(list=lst)
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = {"plan_file": str(Path(d) / "plan.csv"), "timezone": "Asia/Seoul", "shorts_max_seconds": 180}
+            videos = dict(base)
+            out, longs, _ = yt.write_calendar(cfg, videos, "운동과 건강함", 60)
+            self.assertEqual(longs, 1)
+            self.assertIn('"refresh": 60', out.read_text(encoding="utf-8"))
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                yt.watch_calendar(cfg, Fake(), videos, "운동과 건강함", 60, sleep=lambda s: None, rounds=2)
+            html = out.read_text(encoding="utf-8")
+            self.assertIn("2026-11-20", html)  # 새 예약이 달력에 반영됨
+            self.assertEqual(len(calls), 2)  # 영상 50개 이하 → 갱신 1번에 API 1번
+            self.assertEqual(videos["D1"]["status"]["publishAt"], "2026-11-20T09:00:00Z")
+            yt.write_calendar(cfg, videos, "운동과 건강함", 0)
+            self.assertIn('"refresh": 0', out.read_text(encoding="utf-8"))
+
+    def test_watch_survives_api_error(self):
+        class Boom:
+            def videos(self):
+                def lst(**kw):
+                    raise RuntimeError("network down")
+                return SimpleNamespace(list=lst)
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = {"plan_file": str(Path(d) / "plan.csv"), "timezone": "Asia/Seoul", "shorts_max_seconds": 180}
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                yt.watch_calendar(cfg, Boom(), CalendarTests().vids(), "채널", 60, sleep=lambda s: None, rounds=1)
+            self.assertIn("갱신 실패", buf.getvalue())
 
 
 class UploadListTests(unittest.TestCase):

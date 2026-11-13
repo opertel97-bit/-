@@ -130,10 +130,24 @@ const label = k => (k === "long" ? "롱폼" : "쇼츠");
 const todayStr = DATA.today;
 let view = new Date(todayStr + "T00:00:00");
 view.setDate(1);
+const LIVE_KEY = "yt-calendar-view";
+function loadLive() {
+  try { return JSON.parse(sessionStorage.getItem(LIVE_KEY) || "null"); } catch (e) { return null; }
+}
+function saveLive() {
+  try {
+    sessionStorage.setItem(LIVE_KEY, JSON.stringify({
+      month: ymd(view), y: window.scrollY,
+      f: ["f-long", "f-short", "f-pub"].map(id => document.getElementById(id).checked),
+    }));
+  } catch (e) {}
+}
+const live = DATA.refresh ? loadLive() : null;
+if (live && live.month) { view = new Date(live.month + "T00:00:00"); view.setDate(1); }
 const expanded = new Set();
 
 document.getElementById("title").textContent = `${DATA.channel} 업로드 달력`;
-document.getElementById("updated").textContent = `기준: ${DATA.generated}`;
+document.getElementById("updated").textContent = DATA.refresh ? `실시간 · ${DATA.refresh}초마다 갱신 · 마지막 ${DATA.generated}` : `기준: ${DATA.generated}`;
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -243,7 +257,10 @@ document.getElementById("prev").onclick = () => { view.setMonth(view.getMonth() 
 document.getElementById("next").onclick = () => { view.setMonth(view.getMonth() + 1); expanded.clear(); renderMonth(); };
 document.getElementById("today").onclick = () => { view = new Date(todayStr + "T00:00:00"); view.setDate(1); expanded.clear(); renderMonth(); };
 for (const id of ["f-long", "f-short", "f-pub"]) document.getElementById(id).onchange = () => { renderMonth(); renderAgenda(); };
+if (live && live.f) ["f-long", "f-short", "f-pub"].forEach((id, i) => { document.getElementById(id).checked = live.f[i]; });
 renderAll();
+if (live && live.y) window.scrollTo(0, live.y);
+if (DATA.refresh) setTimeout(() => { saveLive(); location.reload(); }, DATA.refresh * 1000);
 </script>
 </body>
 </html>
