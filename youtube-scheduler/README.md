@@ -93,10 +93,24 @@ python yt.py comment
 ```bash
 setup_comment_task.bat
 ```
-윈도우 작업 스케줄러에 등록해서 매일 08:10, 18:10, 21:10 에 자동으로 실행합니다 (그 시간에 PC 가 켜져 있어야 함, 기록은 `comment_log.txt`). 끄려면 `remove_comment_task.bat`.
+윈도우 작업 스케줄러에 등록해서 매일 08:10, 18:10, 20:10, 21:10 에 자동으로 실행합니다 (그 시간에 PC 가 켜져 있어야 함, 기록은 `comment_log.txt`). 끄려면 `remove_comment_task.bat`.
 
 - 문구는 기본 3가지를 영상마다 돌아가며 씁니다 (같은 문구 반복은 스팸으로 보일 수 있음). 바꾸려면 `config.yaml` 에 `comment: {texts: ["문구1", "문구2"]}`.
 - 영상마다 다르게 하려면 plan.csv 의 `comment` 열에 문구를 적고, 댓글을 달지 않으려면 `-` 를 적습니다.
+
+### 롱폼 공개 때 원장님별 댓글 자동으로 달기
+
+```
+python yt.py comment --edit-long
+```
+
+메모장(`longform_comments.txt`)이 열리면 한 줄에 하나씩 `영상주소|댓글` 로 적고 저장합니다. 줄바꿈은 `\n`.
+
+```
+https://youtu.be/영상ID|임정민 원장님 1부가 공개됐어요!\n2부도 곧 올라옵니다
+```
+
+위 자동 댓글(작업 스케줄러)이 돌 때 그 롱폼이 공개돼 있으면 댓글을 한 번 달고, 단 줄은 `longform_comments_done.txt` 로 옮깁니다. 아직 예약 중이면 다음 실행 때 다시 확인합니다. 롱폼은 보통 20:00 공개라 `setup_comment_task.bat` 을 다시 실행하면 20:10 실행이 추가됩니다.
 - 댓글 고정은 API 로 안 되므로 필요하면 스튜디오에서 직접 고정하세요. 쇼츠 댓글 속 링크는 클릭되지 않습니다.
 
 ---

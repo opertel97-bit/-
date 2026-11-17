@@ -500,6 +500,34 @@ class CommentTests(unittest.TestCase):
         self.assertIn(dict(got)["A"], texts)
         self.assertEqual((stats["posted"], stats["done"], stats["waiting"]), (2, 1, 1))
 
+    def test_longform_comments_post_once_and_move_to_done(self):
+        pub, priv = {"status": {"privacyStatus": "public"}, "snippet": {"title": "롱폼"}}, {"status": {"privacyStatus": "private"}}
+        fake = self.Fake({"LONGAAAAAA1": pub, "LONGBBBBBB2": priv, "LONGCCCCCC3": pub}, {"LONGCCCCCC3": ["MYCH"]})
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "longform_comments.txt"
+            f.write_text(yt.LONG_COMMENT_HELP
+                         + "https://youtu.be/LONGAAAAAA1|임정민 원장님 1부 공개! 구독 부탁드려요!\\n2부도 곧 올라와요\n"
+                         + "LONGBBBBBB2|아직 예약 중인 영상\n"
+                         + "https://www.youtube.com/watch?v=LONGCCCCCC3|이미 댓글 단 영상\n", encoding="utf-8")
+            stats = yt.run_longform_comments(fake, f, execute=False, channel_id="MYCH")
+            self.assertEqual(fake.posted, [])
+            stats = yt.run_longform_comments(fake, f, execute=True, channel_id="MYCH")
+            self.assertEqual([p["videoId"] for p in fake.posted], ["LONGAAAAAA1"])
+            self.assertEqual(fake.posted[0]["topLevelComment"]["snippet"]["textOriginal"], "임정민 원장님 1부 공개! 구독 부탁드려요!\n2부도 곧 올라와요")
+            self.assertEqual((stats["posted"], stats["waiting"], stats["done"]), (1, 1, 1))
+            left = f.read_text(encoding="utf-8")
+            self.assertIn("LONGBBBBBB2", left)  # 아직 공개 전 → 남겨둠
+            self.assertNotIn("LONGAAAAAA1", left)
+            self.assertNotIn("LONGCCCCCC3", left)
+            self.assertTrue(left.startswith("#"))
+            self.assertIn("LONGAAAAAA1", (Path(d) / "longform_comments_done.txt").read_text(encoding="utf-8"))
+            yt.run_longform_comments(fake, f, execute=True, channel_id="MYCH")
+            self.assertEqual(len(fake.posted), 1)  # 다시 달지 않음
+
+    def test_longform_comments_missing_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(yt.run_longform_comments(None, Path(d) / "x.txt", True)["posted"], 0)
+
     def test_scope_check(self):
         self.assertTrue(yt.has_scopes([yt.SCOPE_MANAGE], need_comments=False))
         self.assertFalse(yt.has_scopes([yt.SCOPE_MANAGE], need_comments=True))

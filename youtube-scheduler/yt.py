@@ -1141,13 +1141,102 @@ def run_comments(yt, rows, tz, now, days, texts, execute) -> dict:
     return stats
 
 
+LONG_COMMENT_FILE = "longform_comments.txt"
+LONG_COMMENT_HELP = "# 롱폼이 공개되면 자동으로 달 채널 댓글. 한 줄에 하나: 영상주소 또는 영상ID|댓글  (줄바꿈은 \\n)\n"
+
+
+def run_longform_comments(yt, path: Path, execute: bool, channel_id: str | None = None) -> dict:
+    """longform_comments.txt 에 적어둔 롱폼이 공개되면 그 댓글을 한 번만 단다. 달고 나면 파일에서 빼서 _done 파일로 옮김."""
+    stats = {"posted": 0, "failed": 0, "waiting": 0, "done": 0}
+    if not path.exists():
+        return stats
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    pairs = []
+    for key, text in parse_replies("\n".join(lines)):
+        try:
+            vid = video_id_from(key)
+        except UserError:
+            print(f"  - 영상 주소를 알 수 없어 건너뜀: {key}")
+            continue
+        if text.strip() and not is_no_post(text):
+            pairs.append((vid, text))
+    if not pairs:
+        return stats
+    print(f"[롱폼] 댓글 예약 {len(pairs)}개 확인")
+    channel_id = channel_id or yt.channels().list(part="id", mine=True).execute()["items"][0]["id"]
+    videos = get_videos(yt, list(dict.fromkeys(v for v, _ in pairs)))
+    todo, finished = [], set()
+    for vid, text in pairs:
+        v = videos.get(vid)
+        if not v:
+            print(f"  - 내 채널에서 찾을 수 없는 영상: {vid}")
+            continue
+        title = v.get("snippet", {}).get("title", vid)
+        if v.get("status", {}).get("privacyStatus") != "public":
+            stats["waiting"] += 1
+            continue
+        try:
+            if channel_commented(yt, vid, channel_id):
+                stats["done"] += 1
+                finished.add(vid)
+                continue
+        except Exception as e:
+            reason, msg = api_error_text(e)
+            print(f"  - 건너뜀 ({reason or msg}): {title}")
+            continue
+        todo.append((vid, title, text))
+    for vid, title, text in todo:
+        print(f"  {'→' if execute else '(미리보기)'} {title}  :  {text}")
+    if not todo:
+        print(f"  새로 댓글 달 롱폼 없음 (이미 댓글 있음 {stats['done']}개 · 아직 공개 전 {stats['waiting']}개)")
+    elif not execute:
+        print(f"\n[미리보기] 롱폼 {len(todo)}개에 위 댓글을 답니다. 실제로 달기: python yt.py comment --execute")
+        return stats
+    for vid, title, text in todo:
+        body = {"snippet": {"videoId": vid, "topLevelComment": {"snippet": {"textOriginal": text}}}}
+        try:
+            yt.commentThreads().insert(part="snippet", body=body).execute()
+            stats["posted"] += 1
+            finished.add(vid)
+        except Exception as e:
+            reason, msg = api_error_text(e)
+            stats["failed"] += 1
+            print(f"  ✗ {title}: {reason} {msg}")
+            if reason in ("quotaExceeded", "dailyLimitExceeded"):
+                break
+    if todo:
+        print(f"  롱폼 댓글 {stats['posted']}개 달림, 실패 {stats['failed']}개")
+    if execute and finished:  # 끝난 영상 줄은 빼서 기록 파일로 (다음 실행 때 다시 확인하지 않도록)
+        keep, moved = [], []
+        for line in lines:
+            key = line.split("|", 1)[0].strip()
+            try:
+                hit = "|" in line and not line.strip().startswith("#") and video_id_from(key) in finished
+            except UserError:
+                hit = False
+            (moved if hit else keep).append(line)
+        path.write_text("\n".join(keep) + "\n", encoding="utf-8")
+        done_file = path.with_name(path.stem + "_done.txt")
+        with done_file.open("a", encoding="utf-8") as f:
+            f.write("\n".join(moved) + "\n")
+    return stats
+
+
 def cmd_comment(cfg, args):
     tz = tz_of(cfg)
+    long_file = resolve(cfg, "plan_file").with_name(LONG_COMMENT_FILE)
+    if getattr(args, "edit_long", False):
+        if not long_file.exists():
+            long_file.write_text(LONG_COMMENT_HELP, encoding="utf-8")
+        print(f"{long_file.name} 를 엽니다. '영상주소|댓글' 형식으로 적고 저장(Ctrl+S)하세요.")
+        open_in_notepad(long_file)
+        return
     rows = load_plan(resolve(cfg, "plan_file"))
     texts = cfg.get("comment", {}).get("texts") or DEFAULT_COMMENTS
     yt = get_service(cfg, interactive=not args.auto, need_comments=True)
     print(f"[{datetime.now(tz):%Y-%m-%d %H:%M}] 공개된 쇼츠 댓글 확인")
     run_comments(yt, rows, tz, datetime.now(tz), args.days, texts, args.execute)
+    run_longform_comments(yt, long_file, args.execute)
 
 
 # ---------------------------------------------------------------- 명령: replies (시청자 댓글 반자동 답글)
@@ -1517,6 +1606,7 @@ def main(argv=None):
     cm.add_argument("--execute", action="store_true", help="실제로 댓글 달기")
     cm.add_argument("--days", type=int, default=3, help="최근 며칠 안에 공개된 쇼츠까지 확인할지 (기본 3)")
     cm.add_argument("--auto", action="store_true", help="작업 스케줄러용: 로그인 창을 띄우지 않음")
+    cm.add_argument("--edit-long", action="store_true", help="롱폼 공개 때 달 댓글 적기 (longform_comments.txt 열기)")
 
     e = sub.add_parser("export", help="해시태그 없는 영상 목록을 Claude 에게 줄 형태로 만들기")
     e.add_argument("--all", action="store_true", help="이미 작성된 영상도 포함")
