@@ -54,9 +54,12 @@
          line-height: 22px; text-align: center; border-radius: 50%; }
   .cell.sun .num { color: var(--sun); } .cell.sat .num { color: var(--sat); }
   .cell.today .num { background: var(--today); color: var(--panel); }
-  .chip { display: block; font-size: 12px; line-height: 1.35; padding: 3px 6px; margin-top: 3px; border-radius: 6px;
-          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-decoration: none; color: var(--text); }
+  .chip { display: block; font-size: 12px; line-height: 1.35; padding: 4px 6px; margin-top: 4px; border-radius: 6px;
+          white-space: normal; word-break: keep-all; overflow-wrap: anywhere; text-decoration: none; color: var(--text); }
   .chip .t { font-weight: 700; margin-right: 4px; font-variant-numeric: tabular-nums; }
+  .chip .who { font-weight: 800; }
+  .chip .ttl { display: block; font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .chip.published .who { font-weight: 600; }
   .chip.long { background: var(--long-soft); border-left: 3px solid var(--long); }
   .chip.short { background: var(--short-soft); border-left: 3px solid var(--short); }
   .chip.published { background: transparent; color: var(--muted); border-left-style: dashed; }
@@ -126,6 +129,8 @@ const pad = n => String(n).padStart(2, "0");
 const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const studio = id => `https://studio.youtube.com/video/${encodeURIComponent(id)}/edit`;
 const label = k => (k === "long" ? "롱폼" : "쇼츠");
+// 이름표(임정민 원장 1부)를 앞에 보여주므로 제목 끝의 같은 괄호는 뺌
+const bare = ev => (ev.who ? ev.title.replace(/\s*[(（][^()（）]+[)）](?![^(（]*[(（])/, "").trim() || ev.title : ev.title);
 
 const todayStr = DATA.today;
 let view = new Date(todayStr + "T00:00:00");
@@ -213,7 +218,8 @@ function renderMonth() {
       a.target = "_blank";
       a.rel = "noopener";
       a.title = `${ev.date} ${ev.time} · ${label(ev.kind)} · ${ev.state === "scheduled" ? "예약" : "공개됨"}\n${ev.title}`;
-      a.append(el("span", "t", ev.time), document.createTextNode(ev.title));
+      if (ev.who) a.append(el("span", "t", ev.time), el("span", "who", ev.who), el("span", "ttl", bare(ev)));
+      else a.append(el("span", "t", ev.time), document.createTextNode(ev.title));
       cell.append(a);
     }
     if (list.length > shown.length) {
@@ -244,7 +250,10 @@ function renderAgenda() {
       a.href = studio(ev.id);
       a.target = "_blank";
       a.rel = "noopener";
-      a.append(el("span", "t", ev.time), el("span", `tag ${ev.kind}`, label(ev.kind)), el("span", "title", ev.title));
+      const title = el("span", "title");
+      if (ev.who) title.append(el("b", "who", ev.who + "  "));
+      title.append(document.createTextNode(bare(ev)));
+      a.append(el("span", "t", ev.time), el("span", `tag ${ev.kind}`, label(ev.kind)), title);
       items.append(a);
     }
     row.append(head, items);

@@ -327,6 +327,16 @@ class CalendarTests(unittest.TestCase):
         ])
         self.assertEqual(undated, {"long": 1, "short": 1})
 
+    def test_content_label(self):
+        L = yt.content_label
+        self.assertEqual(L('"벌어진 틈 메워달라고 하지 마세요" 밥 먹을 때마다… (임정민 원장 1부)'), "임정민 원장 1부")
+        self.assertEqual(L("마운자로, 살만 빠지는 줄 아셨나요? (비만당뇨센터장 김용진1부)"), "김용진 1부")
+        self.assertEqual(L("“혈당 96이 244까지” (당뇨딸 오은영 님 통합본)"), "오은영 님 통합본")
+        self.assertEqual(L("소변은 찝찝하고 (비뇨기 전문의 유정완 원장) - 이전버전"), "유정완 원장")
+        self.assertEqual(L("“좋은 것만 챙겨 먹으면 될까?” (강형창 원장 특집) - 비공개"), "강형창 원장 특집")
+        self.assertEqual(L("거북목, 굽은 등 집에서 '이 동작'으로 잡아보세요 #건강"), "")
+        self.assertEqual(L("“돈 안드는 방법들입니다” 약 없이 7가지 방법 ｜가장 쉽게 (양혁용 원장 2부)"), "양혁용 원장 2부")
+
     def test_render_escapes_script(self):
         events, undated = yt.calendar_events(self.vids(), KST, 180)
         html = yt.render_calendar(events, undated, "운동과 건강함", NOW)

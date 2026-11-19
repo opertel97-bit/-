@@ -947,6 +947,20 @@ def cmd_linklist(cfg, args):
 CALENDAR_FILE = "calendar.html"
 
 
+ROLE_PREFIX = re.compile(r"^.*?(센터장|전문의|당뇨딸)\s*")
+
+
+def content_label(title: str) -> str:
+    """제목 속 마지막 괄호 '(임정민 원장 1부)' → '임정민 원장 1부'. 직함 앞부분은 떼고 '김용진1부' 는 '김용진 1부' 로."""
+    found = re.findall(r"[(（]([^()（）]+)[)）]", title or "")
+    if not found:
+        return ""
+    label = " ".join(found[-1].split())
+    trimmed = ROLE_PREFIX.sub("", label)
+    label = trimmed or label
+    return re.sub(r"(?<=[가-힣])(\d+부)", r" \1", label)
+
+
 def calendar_events(videos: dict, tz: ZoneInfo, max_short: int) -> tuple[list[dict], dict]:
     """영상 목록 -> 달력 이벤트. 예약된 영상은 예약 시각, 공개된 영상은 공개 시각에 표시."""
     events, undated = [], {"long": 0, "short": 0}
@@ -968,7 +982,7 @@ def calendar_events(videos: dict, tz: ZoneInfo, max_short: int) -> tuple[list[di
             continue
         local = when.astimezone(tz)
         events.append({
-            "id": vid, "title": sn.get("title", ""), "kind": kind, "state": state,
+            "id": vid, "title": sn.get("title", ""), "who": content_label(sn.get("title", "")), "kind": kind, "state": state,
             "date": local.strftime("%Y-%m-%d"), "time": local.strftime("%H:%M"),
         })
     events.sort(key=lambda e: (e["date"], e["time"]))
