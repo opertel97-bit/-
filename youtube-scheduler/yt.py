@@ -747,6 +747,15 @@ def cmd_check(cfg, args):
 # ---------------------------------------------------------------- 명령: apply / verify
 
 
+def scheduled_status(st: dict, want: datetime) -> dict:
+    """예약 시간만 바꾸고 나머지 공개 설정(아동용 여부 등)은 그대로 유지하는 status body."""
+    new_status = {"privacyStatus": "private", "publishAt": to_api_time(want)}
+    for k in ("selfDeclaredMadeForKids", "embeddable", "license", "publicStatsViewable", "containsSyntheticMedia"):
+        if k in st:
+            new_status[k] = st[k]
+    return new_status
+
+
 def desired_changes(row: dict, video: dict, tz: ZoneInfo) -> tuple[dict | None, list[str]]:
     """plan 행과 유튜브 현재 상태를 비교해 (update 요청 body 또는 None, 변경 설명 목록)."""
     sn, st = video.get("snippet", {}), video.get("status", {})
@@ -776,10 +785,7 @@ def desired_changes(row: dict, video: dict, tz: ZoneInfo) -> tuple[dict | None, 
         want = parse_local(row["publish_at"], tz)
         have = parse_api_time(st["publishAt"]) if st.get("publishAt") else None
         if have != want:
-            new_status = {"privacyStatus": "private", "publishAt": to_api_time(want)}
-            for k in ("selfDeclaredMadeForKids", "embeddable", "license", "publicStatsViewable", "containsSyntheticMedia"):
-                if k in st:
-                    new_status[k] = st[k]
+            new_status = scheduled_status(st, want)
             old = fmt_local(have, tz) if have else "없음"
             notes.append(f"예약: {old} → {row['publish_at']} ({tz.key})")
 
@@ -895,6 +901,117 @@ def cmd_apply(cfg, args):
 
     apply_rows(yt, rows, targets, tz, datetime.now(tz), args.execute, args.limit,
                save=lambda rs: save_plan(rs, plan_path), backup_dir=BASE / "backups", confirm=confirm)
+
+
+# ---------------------------------------------------------------- 명령: reschedule (달력에서 옮긴 일정을 유튜브 예약에 반영)
+
+RESCHEDULE_FILE = "reschedule.txt"
+RESCHEDULE_HELP = "# 달력에서 '옮긴 내용 복사' 를 누르고 여기에 붙여넣으세요.  형식: 영상ID|2026-11-28 20:00|메모\n"
+
+
+def parse_reschedule(text: str, tz: ZoneInfo) -> tuple[list[tuple[str, datetime, str]], list[str]]:
+    items, errors = {}, []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [x.strip() for x in line.split("|")]
+        try:
+            vid = video_id_from(parts[0])
+            when = parse_local(parts[1], tz)
+        except (UserError, ValueError, IndexError):
+            errors.append(line)
+            continue
+        items[vid] = (vid, when, parts[2] if len(parts) > 2 else "")  # 같은 영상이 또 나오면 아래 줄 기준
+    return list(items.values()), errors
+
+
+def run_reschedule(yt, items, tz: ZoneInfo, now: datetime, confirm, backup_dir: Path | None = None) -> dict:
+    stats = {"planned": 0, "ok": 0, "failed": 0, "skipped": 0}
+    videos = get_videos(yt, [vid for vid, _, _ in items])
+    plan = []
+    for vid, when, memo in items:
+        v = videos.get(vid)
+        name = memo or vid
+        if not v:
+            print(f"  ! 내 채널에서 찾을 수 없음: {name} ({vid})")
+            stats["skipped"] += 1
+            continue
+        st, title = v.get("status", {}), v.get("snippet", {}).get("title", vid)
+        name = memo or content_label(title) or title[:40]
+        if st.get("privacyStatus") != "private":
+            print(f"  ! 이미 공개(또는 일부공개)된 영상이라 예약을 바꿀 수 없음: {name}")
+            stats["skipped"] += 1
+            continue
+        if when < now + MIN_LEAD:
+            print(f"  ! 지금부터 15분 이후로만 예약할 수 있음: {name} → {fmt_local(when, tz)}")
+            stats["skipped"] += 1
+            continue
+        have = parse_api_time(st["publishAt"]) if st.get("publishAt") else None
+        if have == when:
+            stats["skipped"] += 1
+            continue
+        plan.append((vid, v, when, have, name))
+    stats["planned"] = len(plan)
+    if not plan:
+        print("바꿀 예약이 없습니다. (이미 모두 같은 시간)")
+        return stats
+    plan.sort(key=lambda x: x[2])
+    print()
+    for vid, v, when, have, name in plan:
+        old = fmt_local(have, tz)[5:] if have else "예약 없음"
+        print(f"  {name}:  {old}  →  {fmt_local(when, tz)[5:]}")
+    print(f"\n총 {len(plan)}개 · 예상 할당량 {len(plan) * QUOTA_UPDATE} / 하루 10,000")
+    if not confirm(len(plan)):
+        print("취소했습니다. 아무것도 바뀌지 않았습니다.")
+        return stats
+    if backup_dir:
+        backup_dir.mkdir(exist_ok=True)
+        bpath = backup_dir / f"before-reschedule-{datetime.now(tz):%Y%m%d-%H%M%S}.json"
+        bpath.write_text(json.dumps({vid: v for vid, v, _, _, _ in plan}, ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"원래 예약 백업: {bpath.name}")
+    for vid, v, when, have, name in plan:
+        body = {"id": vid, "status": scheduled_status(v.get("status", {}), when)}
+        try:
+            yt.videos().update(part="status", body=body).execute()
+        except Exception as e:
+            reason, msg = api_error_text(e)
+            stats["failed"] += 1
+            print(f"  ✗ {name}: {reason} {msg}")
+            if reason in ("quotaExceeded", "dailyLimitExceeded"):
+                print("오늘 할당량을 다 썼습니다. 내일 같은 명령을 다시 실행하면 남은 것만 바뀝니다.")
+                break
+            continue
+        stats["ok"] += 1
+        print(f"  ✓ {name}  →  {fmt_local(when, tz)[5:]}")
+    print(f"\n완료 {stats['ok']}개, 실패 {stats['failed']}개. 달력 확인: python yt.py calendar")
+    return stats
+
+
+def cmd_reschedule(cfg, args):
+    tz = tz_of(cfg)
+    path = resolve(cfg, "plan_file").with_name(RESCHEDULE_FILE)
+    items, errors = ([], [])
+    if path.exists():
+        items, errors = parse_reschedule(path.read_text(encoding="utf-8-sig"), tz)
+    if not items:
+        if not errors:
+            path.write_text(RESCHEDULE_HELP, encoding="utf-8")
+            print(f"{path.name} 를 메모장으로 엽니다. 달력에서 '옮긴 내용 복사' 한 것을 붙여넣고 저장(Ctrl+S)한 뒤 이 명령을 다시 실행하세요.")
+            open_in_notepad(path)
+            return
+    for line in errors:
+        print(f"  ! 이해하지 못한 줄 (건너뜀): {line}")
+    if not items:
+        return
+    yt = get_service(cfg, interactive=True)
+
+    def confirm(n):
+        if args.yes:
+            return True
+        return input(f"\n{n}개 영상의 예약 시간을 실제로 바꿉니다. 계속할까요? (y/N) ").strip().lower() == "y"
+
+    run_reschedule(yt, items, tz, datetime.now(tz), confirm, BASE / "backups")
 
 
 def cmd_verify(cfg, args):
@@ -1073,11 +1190,27 @@ def apply_calendar_plan(events: list[dict], plan_text: str, today: date) -> tupl
     return events, notes
 
 
-def render_calendar(events: list[dict], undated: dict, channel: str, now: datetime, refresh: int = 0, plan: list[dict] | None = None) -> str:
+def unscheduled_longs(videos: dict, max_short: int) -> list[dict]:
+    """예약 시간이 없는 비공개 롱폼 (달력 위 '예약 안 된 롱폼' 칸에서 끌어다 놓을 수 있게)."""
+    out = []
+    for vid, v in videos.items():
+        st, sn = v.get("status", {}), v.get("snippet", {})
+        if st.get("privacyStatus") != "private" or st.get("publishAt") or sn.get("liveBroadcastContent") == "upcoming":
+            continue
+        if iso_duration_seconds(v.get("contentDetails", {}).get("duration", "")) <= max_short:
+            continue
+        title = sn.get("title", "")
+        out.append({"id": vid, "title": title, "who": content_label(title), "kind": "long", "state": "unscheduled", "date": "", "time": ""})
+    out.sort(key=lambda e: natural_key(e["who"] or e["title"]))
+    return out
+
+
+def render_calendar(events: list[dict], undated: dict, channel: str, now: datetime, refresh: int = 0, plan: list[dict] | None = None,
+                    tray: list[dict] | None = None) -> str:
     template = (BASE / "calendar_template.html").read_text(encoding="utf-8")
     data = {
         "channel": channel, "today": now.strftime("%Y-%m-%d"), "generated": now.strftime("%Y-%m-%d %H:%M:%S" if refresh else "%Y-%m-%d %H:%M"),
-        "events": events, "undated": undated, "refresh": refresh, "plan": plan,
+        "events": events, "undated": undated, "refresh": refresh, "plan": plan, "tray": tray or [],
     }
     payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")  # 제목에 </script> 가 있어도 안전
     return template.replace("/*__DATA__*/null", payload)
@@ -1096,7 +1229,8 @@ def write_calendar(cfg, videos: dict, channel_title: str, refresh: int = 0, verb
             for w in warns:
                 print(f"  ⚠ {w}")
     out = resolve(cfg, "plan_file").with_name(CALENDAR_FILE)
-    out.write_text(render_calendar(shown if notes is not None else events, undated, channel_title, datetime.now(tz), refresh, notes), encoding="utf-8")
+    tray = unscheduled_longs(videos, int(cfg["shorts_max_seconds"]))
+    out.write_text(render_calendar(shown if notes is not None else events, undated, channel_title, datetime.now(tz), refresh, notes, tray), encoding="utf-8")
     scheduled = [e for e in events if e["state"] == "scheduled"]
     longs = sum(1 for e in scheduled if e["kind"] == "long")
     return out, longs, len(scheduled) - longs
@@ -1698,6 +1832,9 @@ def main(argv=None):
     v = sub.add_parser("verify", help="반영 결과 확인")
     v.add_argument("--only", help="이 video_id 들만 (쉼표 구분)")
 
+    rs = sub.add_parser("reschedule", help="달력에서 옮긴 일정을 유튜브 예약에 한 번에 반영 (확인 후)")
+    rs.add_argument("--yes", action="store_true", help="확인 질문 생략")
+
     sub.add_parser("linklist", help="관련 동영상 수동 연결 체크리스트")
 
     cal = sub.add_parser("calendar", help="롱폼·쇼츠 예약 달력을 브라우저로 보기")
@@ -1734,7 +1871,7 @@ def main(argv=None):
     handler = {
         "auth": cmd_auth, "fetch": cmd_fetch, "generate": cmd_generate, "schedule": cmd_schedule,
         "check": cmd_check, "apply": cmd_apply, "verify": cmd_verify, "linklist": cmd_linklist,
-        "export": cmd_export, "import": cmd_import, "calendar": cmd_calendar, "comment": cmd_comment, "replies": cmd_replies, "transcript": cmd_transcript,
+        "export": cmd_export, "import": cmd_import, "calendar": cmd_calendar, "reschedule": cmd_reschedule, "comment": cmd_comment, "replies": cmd_replies, "transcript": cmd_transcript,
     }[args.cmd]
     try:
         handler(cfg, args)

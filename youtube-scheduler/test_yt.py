@@ -426,6 +426,61 @@ class CalendarWatchTests(unittest.TestCase):
             self.assertIn("갱신 실패", buf.getvalue())
 
 
+class RescheduleTests(unittest.TestCase):
+    class Fake:
+        def __init__(self, videos):
+            self.v, self.updated = videos, []
+
+        def videos(self):
+            def lst(part, id):
+                return SimpleNamespace(execute=lambda: {"items": [dict(self.v[i], id=i) for i in id.split(",") if i in self.v]})
+
+            def upd(part, body):
+                return SimpleNamespace(execute=lambda: self.updated.append(body))
+            return SimpleNamespace(list=lst, update=upd)
+
+    def test_parse_and_apply(self):
+        text = """# 메모
+https://youtu.be/AAAAAAAAAA1|2026-11-28 20:00|유정완 통합본
+BBBBBBBBBB2|2026-11-22 20:00|박용택 1부
+CCCCCCCCCC3|2026-11-30 20:00|이미 공개
+DDDDDDDDDD4|2026-11-19 20:00|이미 같음
+EEEEEEEEEE5|2026-11-01 20:00|과거
+잘못된 줄
+"""
+        items, errors = yt.parse_reschedule(text, KST)
+        self.assertEqual(len(items), 5)
+        self.assertEqual(errors, ["잘못된 줄"])
+        st = lambda **kw: {"status": dict(kw), "snippet": {"title": "t"}}
+        fake = self.Fake({
+            "AAAAAAAAAA1": st(privacyStatus="private", publishAt="2026-11-22T11:00:00Z", selfDeclaredMadeForKids=False),
+            "BBBBBBBBBB2": st(privacyStatus="private"),
+            "CCCCCCCCCC3": st(privacyStatus="public"),
+            "DDDDDDDDDD4": st(privacyStatus="private", publishAt="2026-11-19T11:00:00Z"),
+            "EEEEEEEEEE5": st(privacyStatus="private"),
+        })
+        with redirect_stdout(io.StringIO()):
+            stats = yt.run_reschedule(fake, items, KST, NOW, confirm=lambda n: False)
+        self.assertEqual(fake.updated, [])  # 취소하면 아무것도 안 바뀜
+        self.assertEqual(stats["planned"], 2)
+        with redirect_stdout(io.StringIO()):
+            stats = yt.run_reschedule(fake, items, KST, NOW, confirm=lambda n: True)
+        got = {b["id"]: b["status"] for b in fake.updated}
+        self.assertEqual(set(got), {"AAAAAAAAAA1", "BBBBBBBBBB2"})
+        self.assertEqual(got["AAAAAAAAAA1"], {"privacyStatus": "private", "publishAt": "2026-11-28T11:00:00Z", "selfDeclaredMadeForKids": False})
+        self.assertEqual(got["BBBBBBBBBB2"]["publishAt"], "2026-11-22T11:00:00Z")
+        self.assertEqual((stats["ok"], stats["skipped"]), (2, 3))
+
+    def test_unscheduled_tray(self):
+        vids = {
+            "L1": {"snippet": {"title": "무릎 (박용택 원장 2부)"}, "status": {"privacyStatus": "private"}, "contentDetails": {"duration": "PT20M"}},
+            "L2": {"snippet": {"title": "무릎 (박용택 원장 1부)"}, "status": {"privacyStatus": "private"}, "contentDetails": {"duration": "PT20M"}},
+            "L3": {"snippet": {"title": "예약됨"}, "status": {"privacyStatus": "private", "publishAt": "2026-11-22T11:00:00Z"}, "contentDetails": {"duration": "PT20M"}},
+            "S1": {"snippet": {"title": "쇼츠"}, "status": {"privacyStatus": "private"}, "contentDetails": {"duration": "PT40S"}},
+        }
+        self.assertEqual([e["who"] for e in yt.unscheduled_longs(vids, 180)], ["박용택 원장 1부", "박용택 원장 2부"])
+
+
 class UploadListTests(unittest.TestCase):
     class Fake:
         def __init__(self, playlist_pages, search_pages, search_fail=False):

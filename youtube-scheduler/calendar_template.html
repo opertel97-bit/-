@@ -87,6 +87,9 @@
   .plan button { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 8px; padding: 5px 10px; font-size: 13px; cursor: pointer; }
   .plan button:hover { border-color: var(--muted); }
   .hint { color: var(--muted); font-size: 12.5px; margin: 0 0 8px; }
+  .tray { background: var(--panel); border: 1px dashed var(--line); border-radius: 12px; padding: 10px 12px; margin: 0 0 12px; }
+  .tray h3 { margin: 0 0 6px; font-size: 14px; } .tray .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tray .chip { margin: 0; max-width: 260px; }
   .more { font-size: 11.5px; color: var(--muted); margin-top: 3px; cursor: pointer; }
   h2 { font-size: 17px; margin: 28px 0 10px; }
   .agenda { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
@@ -121,7 +124,8 @@
   <div class="stats" id="stats"></div>
 
   <div class="plan" id="plan" hidden></div>
-  <p class="hint">롱폼·쇼츠 예약 블록을 끌어서 다른 날짜에 놓아보세요. 달력에서만 바뀌고 유튜브 예약은 그대로예요 (PC 브라우저에서만 가능).</p>
+  <p class="hint">예약 블록을 끌어서 다른 날짜에 놓아보세요. 블록을 더블클릭하면 시간을 바꿀 수 있어요. 달력에서만 바뀌고, 위 '옮긴 내용 복사' → <b>python yt.py reschedule</b> 로 유튜브 예약에 한 번에 반영돼요 (PC 브라우저에서만 가능).</p>
+  <div class="tray" id="tray" hidden></div>
 
   <div class="toolbar">
     <div class="nav">
@@ -200,24 +204,58 @@ const real = e => !e.plan || e.plan === "moved";  // 통계는 실제 예약 기
 const DRAG_KEY = "yt-calendar-drag";
 let drag = {};
 try { drag = JSON.parse(localStorage.getItem(DRAG_KEY) || "{}") || {}; } catch (e) { drag = {}; }
+for (const k of Object.keys(drag)) if (typeof drag[k] === "string") drag[k] = { date: drag[k] };
 const saveDrag = () => { try { localStorage.setItem(DRAG_KEY, JSON.stringify(drag)); } catch (e) {} };
 const keyOf = ev => (ev.id ? ev.id : `new:${ev.who}`);
 const mdOf = iso => `${+iso.slice(5, 7)}/${+iso.slice(8, 10)}`;
+const pool = () => [...DATA.events, ...(DATA.tray || [])];
+const changed = ev => {
+  const d = drag[keyOf(ev)];
+  if (!d || ev.plan === "ghost") return null;
+  if (ev.state === "unscheduled") return d.date ? d : null;
+  if (ev.state !== "scheduled") return null;
+  return (d.date && d.date !== ev.date) || (d.time && d.time !== ev.time) ? d : null;
+};
 function currentEvents() {
   const out = [];
-  for (const ev of DATA.events) {
-    const to = ev.plan !== "ghost" && ev.state === "scheduled" ? drag[keyOf(ev)] : undefined;
-    if (!to || to === ev.date) { out.push(ev); continue; }
-    if (ev.plan === "new") { out.push({ ...ev, date: to, dragged: true }); continue; }
-    if (ev.plan === "moved") { out.push({ ...ev, date: to, dragged: true }); continue; }  // 원래 자리 흐린 줄은 이미 있음
+  for (const ev of pool()) {
+    const d = changed(ev);
+    if (ev.state === "unscheduled") {
+      if (d) out.push({ ...ev, state: "scheduled", date: d.date, time: d.time || "20:00", plan: "new", dragged: true });
+      continue;
+    }
+    if (!d) { out.push(ev); continue; }
+    const to = d.date || ev.date, time = d.time || ev.time;
+    if (ev.plan === "new" || ev.plan === "moved" || to === ev.date) { out.push({ ...ev, date: to, time, dragged: true }); continue; }
     out.push({ ...ev, plan: "ghost", to });
-    out.push({ ...ev, date: to, plan: "moved", src: ev.date, dragged: true });
+    out.push({ ...ev, date: to, time, plan: "moved", src: ev.date, dragged: true });
   }
   return out;
 }
 function draggedList() {
-  return DATA.events.filter(ev => ev.plan !== "ghost" && ev.state === "scheduled" && drag[keyOf(ev)] && drag[keyOf(ev)] !== ev.date)
-    .map(ev => ({ ev, to: drag[keyOf(ev)] }));
+  return pool().filter(ev => changed(ev)).map(ev => {
+    const d = changed(ev);
+    return { ev, to: d.date || ev.date, time: d.time || ev.time || "20:00", from: ev.state === "unscheduled" ? "" : (ev.plan === "moved" ? ev.src : ev.date) };
+  });
+}
+
+function renderTray() {
+  const box = document.getElementById("tray");
+  box.innerHTML = "";
+  const left = (DATA.tray || []).filter(ev => !changed(ev));
+  if (!left.length) { box.hidden = true; return; }
+  box.hidden = false;
+  box.append(el("h3", "", `예약 안 된 롱폼 ${left.length}개 · 날짜 칸으로 끌어다 놓으세요 (기본 20:00)`));
+  const chips = el("div", "chips");
+  for (const ev of left) {
+    const a = el("div", "chip long scheduled");
+    a.draggable = true;
+    a.ondragstart = e => { e.dataTransfer.setData("text/x-yt-key", keyOf(ev)); e.dataTransfer.effectAllowed = "move"; };
+    a.append(el("span", "who", ev.who || ev.title.slice(0, 30)));
+    if (ev.who) a.append(el("span", "ttl", bare(ev)));
+    chips.append(a);
+  }
+  box.append(chips);
 }
 
 function renderPlan() {
@@ -236,7 +274,7 @@ function renderPlan() {
   const ul = el("ul");
   for (const d of clashDays) ul.append(el("li", "warn", `⚠ ${mdOf(d)} 에 롱폼 ${clash[d].length}개: ${clash[d].map(e => e.who || e.title.slice(0, 20)).join(", ")}`));
   for (const n of warns) ul.append(el("li", "warn", "⚠ " + n.text));
-  for (const { ev, to } of moved) ul.append(el("li", "", `✋ ${mdOf(ev.plan === "moved" ? ev.src : ev.date)} → ${mdOf(to)} ${ev.who || ev.title.slice(0, 30)} (끌어서 옮김)`));
+  for (const m of moved) ul.append(el("li", "", `✋ ${m.from ? mdOf(m.from) : "예약 없음"} → ${mdOf(m.to)} ${m.time} ${m.ev.who || m.ev.title.slice(0, 30)}`));
   for (const n of notes.filter(n => n.level !== "warn")) ul.append(el("li", n.level, "✓ " + n.text));
   box.append(ul);
   box.append(el("div", "legend", "빨간 칸 = 새로 넣을 영상 · 파란 점선 = 옮길 자리 · 흐린 줄 = 옮기기 전 자리 · 노란 칸 = 롱폼이 2개 이상인 날. 유튜브 예약은 아직 그대로예요."));
@@ -244,11 +282,14 @@ function renderPlan() {
     const btns = el("div", "btns");
     const reset = el("button", "", "끌어서 옮긴 것 모두 되돌리기");
     reset.onclick = () => { drag = {}; saveDrag(); renderAll(); };
-    const copy = el("button", "", "옮긴 내용 글로 복사");
+    const copy = el("button", "", "옮긴 내용 복사 (reschedule 용)");
     copy.onclick = () => {
-      const text = moved.map(({ ev, to }) => `${mdOf(ev.plan === "moved" ? ev.src : ev.date)} → ${mdOf(to)}  ${ev.time}  ${ev.who || ev.title}`).join("\n");
+      const real = moved.filter(m => m.ev.id), fake = moved.filter(m => !m.ev.id);
+      const text = ["# 달력에서 옮긴 일정 → cmd 에서 python yt.py reschedule",
+        ...moved.map(m => `# ${m.from ? mdOf(m.from) : "예약 없음"} → ${mdOf(m.to)} ${m.time}  ${m.ev.who || m.ev.title}${m.ev.id ? "" : "  (업로드 전 블록이라 반영 안 됨)"}`),
+        ...real.map(m => `${m.ev.id}|${m.to} ${m.time}|${m.ev.who || m.ev.title.slice(0, 40)}`)].join("\n");
       (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(
-        () => { copy.textContent = "복사됨!"; setTimeout(() => (copy.textContent = "옮긴 내용 글로 복사"), 1500); },
+        () => { copy.textContent = "복사됨!"; setTimeout(() => (copy.textContent = "옮긴 내용 복사 (reschedule 용)"), 1500); },
         () => prompt("아래 내용을 복사하세요", text));
     };
     btns.append(reset, copy);
@@ -308,9 +349,10 @@ function renderMonth() {
       document.querySelectorAll(".cell.drop").forEach(c => c.classList.remove("drop"));
       const k = e.dataTransfer.getData("text/x-yt-key");
       if (!k) return;
-      const base = DATA.events.find(ev => ev.plan !== "ghost" && keyOf(ev) === k);
+      const base = pool().find(ev => ev.plan !== "ghost" && keyOf(ev) === k);
       if (!base) return;
-      if (key === base.date) delete drag[k]; else drag[k] = key;
+      drag[k] = { ...(drag[k] || {}), date: key };
+      if (key === base.date && !(drag[k].time && drag[k].time !== base.time)) delete drag[k];
       saveDrag();
       renderAll();
     };
@@ -321,6 +363,23 @@ function renderMonth() {
       if (ev.state === "scheduled" && ev.plan !== "ghost") {
         a.draggable = true;
         a.ondragstart = e => { e.dataTransfer.setData("text/x-yt-key", keyOf(ev)); e.dataTransfer.effectAllowed = "move"; };
+        let timer = null;  // 한 번 클릭 = 스튜디오 열기, 두 번 클릭 = 시간 바꾸기
+        a.onclick = e => {
+          if (!ev.id) return;
+          e.preventDefault();
+          clearTimeout(timer);
+          timer = setTimeout(() => window.open(studio(ev.id), "_blank", "noopener"), 280);
+        };
+        a.ondblclick = e => {
+          e.preventDefault();
+          clearTimeout(timer);
+          const v = prompt(`${ev.who || ev.title.slice(0, 30)} 공개 시간 (예: 20:00)`, ev.time);
+          if (!v || !/^\d{1,2}:\d{2}$/.test(v.trim())) return;
+          const k = keyOf(ev);
+          drag[k] = { ...(drag[k] || {}), date: ev.date, time: v.trim().padStart(5, "0") };
+          saveDrag();
+          renderAll();
+        };
       }
       const md = iso => `${+iso.slice(5, 7)}/${+iso.slice(8, 10)}`;
       const state = ev.plan === "new" ? "새로 넣을 영상 (업로드 전)" : ev.plan === "moved" ? `${md(ev.src)}에서 옮길 예정` : ev.plan === "ghost" ? `${md(ev.to)}로 옮길 예정` : ev.state === "scheduled" ? "예약" : "공개됨";
@@ -371,7 +430,7 @@ function renderAgenda() {
   }
 }
 
-function renderAll() { renderPlan(); renderStats(); renderMonth(); renderAgenda(); }
+function renderAll() { renderPlan(); renderTray(); renderStats(); renderMonth(); renderAgenda(); }
 document.getElementById("prev").onclick = () => { view.setMonth(view.getMonth() - 1); expanded.clear(); renderMonth(); };
 document.getElementById("next").onclick = () => { view.setMonth(view.getMonth() + 1); expanded.clear(); renderMonth(); };
 document.getElementById("today").onclick = () => { view = new Date(todayStr + "T00:00:00"); view.setDate(1); expanded.clear(); renderMonth(); };
