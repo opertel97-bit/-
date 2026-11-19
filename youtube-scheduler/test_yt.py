@@ -480,6 +480,30 @@ EEEEEEEEEE5|2026-11-01 20:00|과거
         self.assertEqual(got["BBBBBBBBBB2"]["publishAt"], "2026-11-22T11:00:00Z")
         self.assertEqual((stats["ok"], stats["skipped"]), (3, 3))
 
+    def test_find_by_name(self):
+        def v(title, privacy="private", at=None):
+            st = {"privacyStatus": privacy}
+            if at:
+                st["publishAt"] = at
+            return {"snippet": {"title": title}, "status": st}
+        vids = {
+            "A1": v("“나이 탓으로 넘긴 ‘이 변화’” (강형창 원장 특집)", at="2026-11-26T11:00:00Z"),
+            "A2": v("“나이 탓으로 넘긴 ‘이 변화’” (강형창 원장 특집) - 비공개"),
+            "B1": v("무릎 (박용택 원장 1부)", "unlisted"),
+            "C1": v("“좋은 것만 챙겨 먹으면 될까?” (강형창 원장 특집)", at="2026-12-01T11:00:00Z"),
+            "P1": v("공개됨 (박용택 원장 1부)", "public"),
+        }
+        text = """나이 탓으로 넘긴|2026-12-01 20:00
+박용택 원장 1부|2026-11-22 20:00
+강형창 원장 특집|2026-12-06 20:00
+없는 영상|2026-12-06 20:00
+"""
+        items, errors = yt.parse_reschedule(text, KST, vids)
+        self.assertEqual([i[0] for i in items], ["A1", "B1"])  # 예약된 쪽 우선, 공개된 영상은 제외
+        self.assertEqual(len(errors), 2)
+        self.assertIn("여러 영상", errors[0])  # 특집 2개 (둘 다 예약) → 제목 일부로 구분해야 함
+        self.assertIn("없어요", errors[1])
+
     def test_unscheduled_tray(self):
         vids = {
             "L1": {"snippet": {"title": "무릎 (박용택 원장 2부)"}, "status": {"privacyStatus": "private"}, "contentDetails": {"duration": "PT20M"}},

@@ -909,7 +909,28 @@ RESCHEDULE_FILE = "reschedule.txt"
 RESCHEDULE_HELP = "# 달력에서 '옮긴 내용 복사' 를 누르고 여기에 붙여넣으세요.  형식: 영상ID|2026-11-28 20:00|메모\n"
 
 
-def parse_reschedule(text: str, tz: ZoneInfo) -> tuple[list[tuple[str, datetime, str]], list[str]]:
+def find_video_by_name(key: str, videos: dict) -> tuple[str | None, str]:
+    """'(박용택 원장 1부)' 같은 이름표나 제목 일부로 공개 전 영상을 찾음. 같은 이름이 여럿이면 예약된 것을 우선."""
+    k = _norm(key)
+    cands = []
+    for vid, v in videos.items():
+        st, title = v.get("status", {}), v.get("snippet", {}).get("title", "")
+        if st.get("privacyStatus") == "public" or not k:
+            continue
+        if k == _norm(content_label(title)) or k in _norm(title):
+            cands.append((vid, title, bool(st.get("publishAt"))))
+    scheduled = [c for c in cands if c[2]]
+    if len(cands) == 1:
+        return cands[0][0], ""
+    if len(scheduled) == 1:  # '- 비공개' 사본 · 이전버전보다 지금 예약돼 있는 영상
+        return scheduled[0][0], ""
+    if not cands:
+        return None, "공개 전 영상 중에 이 이름이 없어요"
+    return None, "여러 영상이 해당돼요: " + " / ".join(t[:40] for _, t, _ in cands[:4])
+
+
+def parse_reschedule(text: str, tz: ZoneInfo, videos: dict | None = None) -> tuple[list[tuple[str, datetime, str]], list[str]]:
+    """'영상ID 또는 주소 또는 이름표/제목 일부|2026-11-28 20:00|메모' 줄들."""
     items, errors = {}, []
     for raw in text.splitlines():
         line = raw.strip()
@@ -917,12 +938,19 @@ def parse_reschedule(text: str, tz: ZoneInfo) -> tuple[list[tuple[str, datetime,
             continue
         parts = [x.strip() for x in line.split("|")]
         try:
-            vid = video_id_from(parts[0])
             when = parse_local(parts[1], tz)
-        except (UserError, ValueError, IndexError):
+        except (ValueError, IndexError):
             errors.append(line)
             continue
-        items[vid] = (vid, when, parts[2] if len(parts) > 2 else "")  # 같은 영상이 또 나오면 아래 줄 기준
+        key = parts[0]
+        if re.search(r"(?:v=|youtu\.be/|shorts/|live/)[\w-]{11}", key) or re.fullmatch(r"[A-Za-z0-9_-]{11}", key):
+            vid = video_id_from(key)
+        else:
+            vid, why = find_video_by_name(key, videos or {})
+            if not vid:
+                errors.append(f"{line}   ← {why}")
+                continue
+        items[vid] = (vid, when, parts[2] if len(parts) > 2 else key)  # 같은 영상이 또 나오면 아래 줄 기준
     return list(items.values()), errors
 
 
@@ -998,8 +1026,10 @@ def cmd_reschedule(cfg, args):
     tz = tz_of(cfg)
     path = resolve(cfg, "plan_file").with_name(RESCHEDULE_FILE)
     items, errors = ([], [])
+    cache = resolve(cfg, "plan_file").with_name("videos_cache.json")
+    known = json.loads(cache.read_text(encoding="utf-8")) if cache.exists() else {}
     if path.exists():
-        items, errors = parse_reschedule(path.read_text(encoding="utf-8-sig"), tz)
+        items, errors = parse_reschedule(path.read_text(encoding="utf-8-sig"), tz, known)
     if not items:
         if not errors:
             path.write_text(RESCHEDULE_HELP, encoding="utf-8")
@@ -1007,7 +1037,9 @@ def cmd_reschedule(cfg, args):
             open_in_notepad(path)
             return
     for line in errors:
-        print(f"  ! 이해하지 못한 줄 (건너뜀): {line}")
+        print(f"  ! 건너뜀: {line}")
+    if errors:
+        print("  (영상 이름을 못 찾으면 먼저 python yt.py calendar 를 실행해 목록을 새로 받은 뒤 다시 해보세요)")
     if not items:
         return
     yt = get_service(cfg, interactive=True)
