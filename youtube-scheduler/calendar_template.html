@@ -9,12 +9,14 @@
     --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #6b7380; --line: #e3e6eb;
     --long: #2563eb; --long-soft: #dbe6fd; --short: #e11d48; --short-soft: #fde0e6;
     --today: #111827; --sun: #d92d20; --sat: #2563eb; --other-month: #f0f2f5;
+    --plan: #dc2626; --plan-text: #ffffff; --warn: #b45309; --warn-soft: #fef3c7;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #0f1216; --panel: #171b21; --text: #e7eaee; --muted: #8e97a4; --line: #2a3039;
       --long: #6b9bff; --long-soft: #1c2c4d; --short: #ff6b86; --short-soft: #4a1d28;
       --today: #e7eaee; --sun: #ff7a6e; --sat: #7aa5ff; --other-month: #12161b;
+      --plan: #ef4444; --plan-text: #ffffff; --warn: #fbbf24; --warn-soft: #3a2c0b;
     }
   }
   * { box-sizing: border-box; }
@@ -64,6 +66,21 @@
   .chip.short { background: var(--short-soft); border-left: 3px solid var(--short); }
   .chip.published { background: transparent; color: var(--muted); border-left-style: dashed; }
   .chip:hover { filter: brightness(0.96); }
+  .chip.plan-new { background: var(--plan); color: var(--plan-text); border-left: 3px solid var(--plan); }
+  .chip.plan-new .ttl { color: var(--plan-text); opacity: .9; }
+  .chip.plan-moved { outline: 2px dashed var(--long); outline-offset: -2px; }
+  .chip .mv { display: inline-block; font-size: 10.5px; font-weight: 700; padding: 0 5px; border-radius: 4px; margin-left: 4px;
+              background: var(--long); color: #fff; }
+  .chip.plan-ghost { background: transparent; border-left: 3px dotted var(--muted); color: var(--muted); opacity: .75; }
+  .chip.plan-ghost .who { text-decoration: line-through; font-weight: 600; }
+  .cell.conflict { box-shadow: inset 0 0 0 2px var(--warn); background: var(--warn-soft); }
+  .cell .clash { display: block; font-size: 11px; font-weight: 700; color: var(--warn); margin-bottom: 2px; }
+  .plan { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--plan); border-radius: 12px;
+          padding: 12px 14px; margin: 0 0 14px; font-size: 13.5px; }
+  .plan h3 { margin: 0 0 6px; font-size: 14.5px; }
+  .plan ul { margin: 0; padding-left: 18px; } .plan li { margin: 2px 0; }
+  .plan li.warn { color: var(--warn); font-weight: 600; } .plan .legend { color: var(--muted); font-size: 12.5px; margin-top: 6px; }
+  .aitem .tag.plan { background: var(--plan); color: var(--plan-text); }
   .more { font-size: 11.5px; color: var(--muted); margin-top: 3px; cursor: pointer; }
   h2 { font-size: 17px; margin: 28px 0 10px; }
   .agenda { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
@@ -96,6 +113,8 @@
   </header>
 
   <div class="stats" id="stats"></div>
+
+  <div class="plan" id="plan" hidden></div>
 
   <div class="toolbar">
     <div class="nav">
@@ -168,10 +187,24 @@ function visible(ev) {
   return true;
 }
 
+const real = e => !e.plan || e.plan === "moved";  // 통계는 실제 예약 기준
+
+function renderPlan() {
+  const box = document.getElementById("plan");
+  if (!DATA.plan) return;
+  box.hidden = false;
+  const warns = DATA.plan.filter(n => n.level === "warn");
+  box.append(el("h3", "", `일정 계획 미리보기 · 확인할 점 ${warns.length}개`));
+  const ul = el("ul");
+  for (const n of [...warns, ...DATA.plan.filter(n => n.level !== "warn")]) ul.append(el("li", n.level, (n.level === "warn" ? "⚠ " : "✓ ") + n.text));
+  box.append(ul);
+  box.append(el("div", "legend", "빨간 칸 = 새로 넣을 영상 · 파란 점선 = 옮길 예정 · 흐린 줄 = 옮기기 전 자리 · 노란 칸 = 롱폼이 2개 이상인 날. 유튜브 예약은 아직 그대로예요 (calendar_plan.txt)."));
+}
+
 function renderStats() {
   const box = document.getElementById("stats");
   box.innerHTML = "";
-  const up = DATA.events.filter(e => e.state === "scheduled").sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  const up = DATA.events.filter(e => e.state === "scheduled" && real(e)).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
   for (const kind of ["long", "short"]) {
     const list = up.filter(e => e.kind === kind);
     const s = el("div", `stat ${kind}`);
@@ -211,15 +244,21 @@ function renderMonth() {
     if (key === todayStr) cell.classList.add("today");
     cell.append(el("span", "num", String(d.getDate())));
     const list = byDate[key] || [];
+    const longs = list.filter(e => e.kind === "long" && e.state === "scheduled" && e.plan !== "ghost").length;
+    if (DATA.plan && longs > 1) { cell.classList.add("conflict"); cell.append(el("span", "clash", `롱폼 ${longs}개`)); }
     const shown = expanded.has(key) ? list : list.slice(0, MAX_CHIPS);
     for (const ev of shown) {
-      const a = el("a", `chip ${ev.kind} ${ev.state}`);
-      a.href = studio(ev.id);
-      a.target = "_blank";
-      a.rel = "noopener";
-      a.title = `${ev.date} ${ev.time} · ${label(ev.kind)} · ${ev.state === "scheduled" ? "예약" : "공개됨"}\n${ev.title}`;
-      if (ev.who) a.append(el("span", "t", ev.time), el("span", "who", ev.who), el("span", "ttl", bare(ev)));
-      else a.append(el("span", "t", ev.time), document.createTextNode(ev.title));
+      const a = el(ev.id ? "a" : "div", `chip ${ev.kind} ${ev.state}${ev.plan ? " plan-" + ev.plan : ""}`);
+      if (ev.id) { a.href = studio(ev.id); a.target = "_blank"; a.rel = "noopener"; }
+      const md = iso => `${+iso.slice(5, 7)}/${+iso.slice(8, 10)}`;
+      const state = ev.plan === "new" ? "새로 넣을 영상 (업로드 전)" : ev.plan === "moved" ? `${md(ev.src)}에서 옮길 예정` : ev.plan === "ghost" ? `${md(ev.to)}로 옮길 예정` : ev.state === "scheduled" ? "예약" : "공개됨";
+      a.title = `${ev.date} ${ev.time} · ${label(ev.kind)} · ${state}\n${ev.title}`;
+      if (ev.who) {
+        a.append(el("span", "t", ev.time), el("span", "who", ev.who));
+        if (ev.plan === "moved") a.append(el("span", "mv", `← ${md(ev.src)}`));
+        if (ev.plan === "ghost") a.append(el("span", "mv", `→ ${md(ev.to)}`));
+        if (ev.plan !== "new" && ev.plan !== "ghost") a.append(el("span", "ttl", bare(ev)));
+      } else a.append(el("span", "t", ev.time), document.createTextNode(ev.title));
       cell.append(a);
     }
     if (list.length > shown.length) {
@@ -234,7 +273,7 @@ function renderMonth() {
 function renderAgenda() {
   const box = document.getElementById("agenda");
   box.innerHTML = "";
-  const up = DATA.events.filter(e => e.state === "scheduled" && visible(e))
+  const up = DATA.events.filter(e => e.state === "scheduled" && visible(e) && e.plan !== "ghost")
     .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
   if (!up.length) { box.append(el("div", "empty", "예약된 영상이 없어요.")); return; }
   const groups = {};
@@ -246,14 +285,13 @@ function renderAgenda() {
     head.append(el("small", "", `${WEEK[d.getDay()]}요일${date === todayStr ? " · 오늘" : ""}`));
     const items = el("div");
     for (const ev of list) {
-      const a = el("a", "aitem");
-      a.href = studio(ev.id);
-      a.target = "_blank";
-      a.rel = "noopener";
+      const a = el(ev.id ? "a" : "div", "aitem");
+      if (ev.id) { a.href = studio(ev.id); a.target = "_blank"; a.rel = "noopener"; }
       const title = el("span", "title");
       if (ev.who) title.append(el("b", "who", ev.who + "  "));
-      title.append(document.createTextNode(bare(ev)));
-      a.append(el("span", "t", ev.time), el("span", `tag ${ev.kind}`, label(ev.kind)), title);
+      if (ev.plan !== "new") title.append(document.createTextNode(bare(ev)));
+      const tag = ev.plan === "new" ? el("span", "tag plan", "추가 예정") : ev.plan === "moved" ? el("span", `tag ${ev.kind}`, "옮길 예정") : el("span", `tag ${ev.kind}`, label(ev.kind));
+      a.append(el("span", "t", ev.time), tag, title);
       items.append(a);
     }
     row.append(head, items);
@@ -261,7 +299,7 @@ function renderAgenda() {
   }
 }
 
-function renderAll() { renderStats(); renderMonth(); renderAgenda(); }
+function renderAll() { renderPlan(); renderStats(); renderMonth(); renderAgenda(); }
 document.getElementById("prev").onclick = () => { view.setMonth(view.getMonth() - 1); expanded.clear(); renderMonth(); };
 document.getElementById("next").onclick = () => { view.setMonth(view.getMonth() + 1); expanded.clear(); renderMonth(); };
 document.getElementById("today").onclick = () => { view = new Date(todayStr + "T00:00:00"); view.setDate(1); expanded.clear(); renderMonth(); };

@@ -337,6 +337,41 @@ class CalendarTests(unittest.TestCase):
         self.assertEqual(L("거북목, 굽은 등 집에서 '이 동작'으로 잡아보세요 #건강"), "")
         self.assertEqual(L("“돈 안드는 방법들입니다” 약 없이 7가지 방법 ｜가장 쉽게 (양혁용 원장 2부)"), "양혁용 원장 2부")
 
+    def test_calendar_plan(self):
+        def v(title, at):
+            return {"snippet": {"title": title}, "status": {"privacyStatus": "private", "publishAt": at},
+                    "contentDetails": {"duration": "PT25M"}}
+        vids = {
+            "Y1": v("야간뇨 (비뇨기 전문의 유정완 원장 통합본)", "2026-11-22T11:00:00Z"),
+            "Y2": v("남성호르몬 (비뇨기 전문의 유정완 선생님)", "2026-11-28T11:00:00Z"),
+            "K1": v("매일 먹던 (강형창 원장 통합본)", "2026-11-26T11:00:00Z"),
+        }
+        events, _ = yt.calendar_events(vids, KST, 180)
+        plan = """# 메모
+추가|2026-11-22 20:00|박용택 원장 1부
+이동|2026-11-22|유정완|2026-11-28
+이동|11/28|유정완|11/30
+추가|11/26|박용택 원장 2부
+이동|2026-12-05|유정완|2026-12-10
+아무말
+"""
+        shown, notes = yt.apply_calendar_plan(events, plan, date(2026, 11, 19))
+        where = {(e["id"], e.get("plan")): e["date"] for e in shown}
+        self.assertEqual(where[("Y1", "moved")], "2026-11-28")  # 22 → 28
+        self.assertEqual(where[("Y2", "moved")], "2026-11-30")  # 원래 28일 것만 30일로 (이어서 밀리지 않음)
+        self.assertEqual(where[("Y1", "ghost")], "2026-11-22")
+        self.assertEqual(where[("K1", None)], "2026-11-26")      # 옮기지 않은 영상은 그대로
+        new = [e for e in shown if e.get("plan") == "new"]
+        self.assertEqual([(e["date"], e["time"], e["who"]) for e in new],
+                         [("2026-11-22", "20:00", "박용택 원장 1부"), ("2026-11-26", "20:00", "박용택 원장 2부")])
+        warns = [n["text"] for n in notes if n["level"] == "warn"]
+        self.assertTrue(any("12/5" in w and "없어요" in w for w in warns))  # 없는 영상 이동
+        self.assertTrue(any("아무말" in w for w in warns))                   # 잘못 적은 줄
+        self.assertTrue(any("11/26" in w and "롱폼 2개" in w for w in warns))  # 같은 날 롱폼 2개
+        self.assertEqual(len([e for e in events if e.get("plan")]), 0)        # 원본은 그대로
+        html = yt.render_calendar(shown, {"long": 0, "short": 0}, "채널", NOW, 0, notes)
+        self.assertIn('"plan": [', html)
+
     def test_render_escapes_script(self):
         events, undated = yt.calendar_events(self.vids(), KST, 180)
         html = yt.render_calendar(events, undated, "운동과 건강함", NOW)

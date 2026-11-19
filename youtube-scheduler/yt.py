@@ -989,21 +989,114 @@ def calendar_events(videos: dict, tz: ZoneInfo, max_short: int) -> tuple[list[di
     return events, undated
 
 
-def render_calendar(events: list[dict], undated: dict, channel: str, now: datetime, refresh: int = 0) -> str:
+CALENDAR_PLAN_FILE = "calendar_plan.txt"
+CALENDAR_PLAN_HELP = """# 달력에만 미리 그려보는 일정 계획 (유튜브에는 아무것도 바꾸지 않음)
+# 새 영상(아직 업로드 전):   추가|날짜 시간|이름표          예) 추가|2026-11-22 20:00|박용택 원장 1부
+# 기존 예약 옮기기:          이동|원래 날짜|찾을 이름|새 날짜  예) 이동|2026-11-22|유정완|2026-11-28
+# 날짜는 2026-11-22 또는 11/22 처럼. 이동은 시간을 그대로 두고, 원래 날짜의 롱폼 중 이름이 들어간 것을 옮김.
+"""
+
+
+def _plan_date(text: str, today: date) -> date:
+    text = text.strip()
+    m = re.fullmatch(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", text)
+    if m:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    m = re.fullmatch(r"(\d{1,2})[-./](\d{1,2})", text)
+    if not m:
+        raise ValueError(text)
+    d = date(today.year, int(m.group(1)), int(m.group(2)))
+    return d.replace(year=d.year + 1) if (today - d).days > 60 else d  # 12월에 1월 일정을 적는 경우
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", "", text or "")
+
+
+def apply_calendar_plan(events: list[dict], plan_text: str, today: date) -> tuple[list[dict], list[dict]]:
+    """calendar_plan.txt 의 '추가' · '이동' 을 달력 이벤트에 덧그림. 실제 예약은 바꾸지 않음."""
+    notes: list[dict] = []
+    events = [dict(e) for e in events]
+    adds, moves = [], []
+    for raw in plan_text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [x.strip() for x in line.split("|")]
+        try:
+            if parts[0] == "추가" and len(parts) >= 3:
+                when = parts[1].split()
+                d = _plan_date(when[0], today)
+                t = when[1] if len(when) > 1 else "20:00"
+                if not re.fullmatch(r"\d{1,2}:\d{2}", t):
+                    raise ValueError(t)
+                adds.append((d.isoformat(), t.zfill(5), parts[2]))
+            elif parts[0] == "이동" and len(parts) >= 4:
+                moves.append((_plan_date(parts[1], today).isoformat(), parts[2], _plan_date(parts[3], today).isoformat()))
+            else:
+                raise ValueError(line)
+        except (ValueError, IndexError):
+            notes.append({"level": "warn", "text": f"이해하지 못한 줄: {line}"})
+    md = lambda iso: f"{int(iso[5:7])}/{int(iso[8:10])}"
+    original = [(e["date"], e) for e in events if e["kind"] == "long"]  # 옮기기 전 날짜를 따로 기억
+    ghosts = []
+    for src, key, dst in moves:  # 원래 상태 기준으로 한꺼번에 옮김 (22→28, 28→30 이 이어서 밀리지 않도록)
+        hits = [e for d0, e in original if d0 == src and _norm(key) in _norm(e.get("who") or e["title"])]
+        if not hits:
+            if any(d0 == dst and _norm(key) in _norm(e.get("who") or e["title"]) for d0, e in original):
+                notes.append({"level": "ok", "text": f"{md(src)} → {md(dst)} {key}: 이미 옮겨져 있어요"})
+            else:
+                notes.append({"level": "warn", "text": f"{md(src)} 에 '{key}' 롱폼이 없어요 (이동 {md(src)} → {md(dst)})"})
+            continue
+        if len(hits) > 1:
+            notes.append({"level": "warn", "text": f"{md(src)} 에 '{key}' 롱폼이 {len(hits)}개라 모두 {md(dst)} 로 옮겼어요. 하나만 옮길 거면 이름을 더 자세히 적어주세요"})
+        for e in hits:
+            ghosts.append(dict(e, plan="ghost", to=dst))
+            e.update(date=dst, plan="moved", src=src)
+            notes.append({"level": "ok", "text": f"{md(src)} → {md(dst)} {e.get('who') or e['title']}"})
+    events += ghosts
+    for d, t, name in adds:
+        if any(e["kind"] == "long" and not e.get("plan") and e["date"] == d and _norm(name) in _norm(e.get("who") or e["title"]) for e in events):
+            notes.append({"level": "ok", "text": f"{md(d)} {name}: 이미 예약돼 있어요"})
+            continue
+        events.append({"id": "", "title": name, "who": name, "kind": "long", "state": "scheduled", "date": d, "time": t, "plan": "new"})
+        notes.append({"level": "ok", "text": f"{md(d)} {t} {name} 추가"})
+    per_day: dict[str, list[dict]] = {}
+    for e in events:
+        if e["kind"] == "long" and e["state"] == "scheduled" and e.get("plan") != "ghost":
+            per_day.setdefault(e["date"], []).append(e)
+    for d in sorted(per_day):
+        if len(per_day[d]) > 1:
+            names = ", ".join(f"{e['time']} {e.get('who') or e['title'][:20]}" for e in sorted(per_day[d], key=lambda x: x["time"]))
+            notes.append({"level": "warn", "text": f"{md(d)} 에 롱폼 {len(per_day[d])}개: {names}"})
+    events.sort(key=lambda e: (e["date"], e["time"]))
+    return events, notes
+
+
+def render_calendar(events: list[dict], undated: dict, channel: str, now: datetime, refresh: int = 0, plan: list[dict] | None = None) -> str:
     template = (BASE / "calendar_template.html").read_text(encoding="utf-8")
     data = {
         "channel": channel, "today": now.strftime("%Y-%m-%d"), "generated": now.strftime("%Y-%m-%d %H:%M:%S" if refresh else "%Y-%m-%d %H:%M"),
-        "events": events, "undated": undated, "refresh": refresh,
+        "events": events, "undated": undated, "refresh": refresh, "plan": plan,
     }
     payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")  # 제목에 </script> 가 있어도 안전
     return template.replace("/*__DATA__*/null", payload)
 
 
-def write_calendar(cfg, videos: dict, channel_title: str, refresh: int = 0) -> tuple[Path, int, int]:
+def write_calendar(cfg, videos: dict, channel_title: str, refresh: int = 0, verbose: bool = False) -> tuple[Path, int, int]:
     tz = tz_of(cfg)
     events, undated = calendar_events(videos, tz, int(cfg["shorts_max_seconds"]))
+    plan_path = resolve(cfg, "plan_file").with_name(CALENDAR_PLAN_FILE)
+    notes = None
+    if plan_path.exists():
+        shown, notes = apply_calendar_plan(events, plan_path.read_text(encoding="utf-8-sig"), datetime.now(tz).date())
+        if verbose:
+            warns = [n["text"] for n in notes if n["level"] == "warn"]
+            print(f"일정 계획({plan_path.name}) 반영 · 확인할 점 {len(warns)}개")
+            for w in warns:
+                print(f"  ⚠ {w}")
     out = resolve(cfg, "plan_file").with_name(CALENDAR_FILE)
-    out.write_text(render_calendar(events, undated, channel_title, datetime.now(tz), refresh), encoding="utf-8")
+    out.write_text(render_calendar(shown if notes is not None else events, undated, channel_title, datetime.now(tz), refresh, notes), encoding="utf-8")
     scheduled = [e for e in events if e["state"] == "scheduled"]
     longs = sum(1 for e in scheduled if e["kind"] == "long")
     return out, longs, len(scheduled) - longs
@@ -1036,12 +1129,19 @@ def watch_calendar(cfg, yt, videos: dict, channel_title: str, every: int, sleep=
 
 
 def cmd_calendar(cfg, args):
+    if getattr(args, "edit_plan", False):
+        plan_path = resolve(cfg, "plan_file").with_name(CALENDAR_PLAN_FILE)
+        if not plan_path.exists():
+            plan_path.write_text(CALENDAR_PLAN_HELP, encoding="utf-8")
+        print(f"{plan_path.name} 를 엽니다. 저장한 뒤 `python yt.py calendar` 로 달력을 다시 여세요. (계획을 지우려면 이 파일을 지우면 됩니다)")
+        open_in_notepad(plan_path)
+        return
     yt = get_service(cfg, interactive=True)
     channel_title, videos = all_my_videos(yt, cfg)
     cache = resolve(cfg, "plan_file").with_name("videos_cache.json")
     cache.write_text(json.dumps(videos, ensure_ascii=False, indent=1), encoding="utf-8")  # 다음 조회 때 누락 보충용
     every = max(30, int(args.every)) if getattr(args, "watch", False) else 0
-    out, longs, shorts = write_calendar(cfg, videos, channel_title, every)
+    out, longs, shorts = write_calendar(cfg, videos, channel_title, every, verbose=True)
     print(f"예약된 롱폼 {longs}개 · 쇼츠 {shorts}개 → {out.name} (브라우저로 열기)")
     if sys.platform == "win32":
         try:
@@ -1603,6 +1703,7 @@ def main(argv=None):
     cal = sub.add_parser("calendar", help="롱폼·쇼츠 예약 달력을 브라우저로 보기")
     cal.add_argument("--watch", action="store_true", help="켜두면 스튜디오에서 바꾼 예약이 달력에 자동 반영")
     cal.add_argument("--every", type=int, default=60, help="--watch 갱신 간격(초), 기본 60 · 최소 30")
+    cal.add_argument("--edit-plan", action="store_true", help="달력에만 그려볼 일정 계획 적기 (calendar_plan.txt)")
 
     rp = sub.add_parser("replies", help="답글 안 단 시청자 댓글 모으기 / --import 로 답글 달기")
     rp.add_argument("--import", dest="do_import", action="store_true", help="replies.txt 의 답글을 실제로 달기")
