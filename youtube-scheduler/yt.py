@@ -939,8 +939,8 @@ def run_reschedule(yt, items, tz: ZoneInfo, now: datetime, confirm, backup_dir: 
             continue
         st, title = v.get("status", {}), v.get("snippet", {}).get("title", vid)
         name = memo or content_label(title) or title[:40]
-        if st.get("privacyStatus") != "private":
-            print(f"  ! 이미 공개(또는 일부공개)된 영상이라 예약을 바꿀 수 없음: {name}")
+        if st.get("privacyStatus") not in ("private", "unlisted"):
+            print(f"  ! 이미 공개된 영상이라 예약을 바꿀 수 없음: {name}")
             stats["skipped"] += 1
             continue
         if when < now + MIN_LEAD:
@@ -958,9 +958,15 @@ def run_reschedule(yt, items, tz: ZoneInfo, now: datetime, confirm, backup_dir: 
         return stats
     plan.sort(key=lambda x: x[2])
     print()
+    unlisted = 0
     for vid, v, when, have, name in plan:
         old = fmt_local(have, tz)[5:] if have else "예약 없음"
-        print(f"  {name}:  {old}  →  {fmt_local(when, tz)[5:]}")
+        flag = ""
+        if v.get("status", {}).get("privacyStatus") == "unlisted":
+            flag, unlisted = "   (지금 일부공개 → 예약으로 바뀜)", unlisted + 1
+        print(f"  {name}:  {old}  →  {fmt_local(when, tz)[5:]}{flag}")
+    if unlisted:
+        print(f"\n※ 일부공개 영상 {unlisted}개는 예약(비공개)으로 바뀌어서, 공개 시간 전까지는 일부공개 링크로 볼 수 없어요.")
     print(f"\n총 {len(plan)}개 · 예상 할당량 {len(plan) * QUOTA_UPDATE} / 하루 10,000")
     if not confirm(len(plan)):
         print("취소했습니다. 아무것도 바뀌지 않았습니다.")
@@ -1202,12 +1208,13 @@ def unscheduled_longs(videos: dict, max_short: int) -> list[dict]:
     out = []
     for vid, v in videos.items():
         st, sn = v.get("status", {}), v.get("snippet", {})
-        if st.get("privacyStatus") != "private" or st.get("publishAt") or sn.get("liveBroadcastContent") == "upcoming":
+        if st.get("privacyStatus") not in ("private", "unlisted") or st.get("publishAt") or sn.get("liveBroadcastContent") == "upcoming":
             continue
         if iso_duration_seconds(v.get("contentDetails", {}).get("duration", "")) <= max_short:
             continue
         title = sn.get("title", "")
-        out.append({"id": vid, "title": title, "who": content_label(title), "kind": "long", "state": "unscheduled", "date": "", "time": ""})
+        out.append({"id": vid, "title": title, "who": content_label(title), "kind": "long", "state": "unscheduled", "date": "", "time": "",
+                    "privacy": st.get("privacyStatus")})
     out.sort(key=lambda e: natural_key(e["who"] or e["title"]))
     return out
 

@@ -464,18 +464,21 @@ EEEEEEEEEE5|2026-11-01 20:00|과거
             "CCCCCCCCCC3": st(privacyStatus="public"),
             "DDDDDDDDDD4": st(privacyStatus="private", publishAt="2026-11-19T11:00:00Z"),
             "EEEEEEEEEE5": st(privacyStatus="private"),
+            "FFFFFFFFFF6": st(privacyStatus="unlisted"),
         })
+        items.append(("FFFFFFFFFF6", yt.parse_local("2026-12-05 20:00", KST), "박용택 3부 (일부공개)"))
         with redirect_stdout(io.StringIO()):
             stats = yt.run_reschedule(fake, items, KST, NOW, confirm=lambda n: False)
         self.assertEqual(fake.updated, [])  # 취소하면 아무것도 안 바뀜
-        self.assertEqual(stats["planned"], 2)
+        self.assertEqual(stats["planned"], 3)
         with redirect_stdout(io.StringIO()):
             stats = yt.run_reschedule(fake, items, KST, NOW, confirm=lambda n: True)
         got = {b["id"]: b["status"] for b in fake.updated}
-        self.assertEqual(set(got), {"AAAAAAAAAA1", "BBBBBBBBBB2"})
+        self.assertEqual(set(got), {"AAAAAAAAAA1", "BBBBBBBBBB2", "FFFFFFFFFF6"})
+        self.assertEqual(got["FFFFFFFFFF6"], {"privacyStatus": "private", "publishAt": "2026-12-05T11:00:00Z"})  # 일부공개 → 예약
         self.assertEqual(got["AAAAAAAAAA1"], {"privacyStatus": "private", "publishAt": "2026-11-28T11:00:00Z", "selfDeclaredMadeForKids": False})
         self.assertEqual(got["BBBBBBBBBB2"]["publishAt"], "2026-11-22T11:00:00Z")
-        self.assertEqual((stats["ok"], stats["skipped"]), (2, 3))
+        self.assertEqual((stats["ok"], stats["skipped"]), (3, 3))
 
     def test_unscheduled_tray(self):
         vids = {
@@ -483,8 +486,10 @@ EEEEEEEEEE5|2026-11-01 20:00|과거
             "L2": {"snippet": {"title": "무릎 (박용택 원장 1부)"}, "status": {"privacyStatus": "private"}, "contentDetails": {"duration": "PT20M"}},
             "L3": {"snippet": {"title": "예약됨"}, "status": {"privacyStatus": "private", "publishAt": "2026-11-22T11:00:00Z"}, "contentDetails": {"duration": "PT20M"}},
             "S1": {"snippet": {"title": "쇼츠"}, "status": {"privacyStatus": "private"}, "contentDetails": {"duration": "PT40S"}},
+            "U1": {"snippet": {"title": "무릎 (박용택 원장 3부)"}, "status": {"privacyStatus": "unlisted"}, "contentDetails": {"duration": "PT20M"}},
+            "P9": {"snippet": {"title": "공개됨"}, "status": {"privacyStatus": "public"}, "contentDetails": {"duration": "PT20M"}},
         }
-        self.assertEqual([e["who"] for e in yt.unscheduled_longs(vids, 180)], ["박용택 원장 1부", "박용택 원장 2부"])
+        self.assertEqual([e["who"] for e in yt.unscheduled_longs(vids, 180)], ["박용택 원장 1부", "박용택 원장 2부", "박용택 원장 3부"])
 
 
 class UploadListTests(unittest.TestCase):

@@ -241,13 +241,14 @@ function renderTray() {
   const left = (DATA.tray || []).filter(ev => !changed(ev));  // 서버 계획으로 연결된 것은 이미 tray 에서 빠져 있음
   if (!left.length) { box.hidden = true; return; }
   box.hidden = false;
-  box.append(el("h3", "", `예약 안 된 롱폼 ${left.length}개 · 날짜 칸으로 끌어다 놓으세요 (기본 20:00)`));
+  box.append(el("h3", "", `예약 안 된 롱폼 ${left.length}개 (비공개·일부공개) · 날짜 칸으로 끌어다 놓으세요 (기본 20:00)`));
   const chips = el("div", "chips");
   for (const ev of left) {
     const a = el("div", "chip long scheduled");
     a.draggable = true;
     a.ondragstart = e => { e.dataTransfer.setData("text/x-yt-key", keyOf(ev)); e.dataTransfer.effectAllowed = "move"; };
     a.append(el("span", "who", ev.who || ev.title.slice(0, 30)));
+    if (ev.privacy === "unlisted") a.append(el("span", "mv", "일부공개"));
     if (ev.who) a.append(el("span", "ttl", bare(ev)));
     chips.append(a);
   }
