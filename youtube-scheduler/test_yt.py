@@ -378,6 +378,13 @@ class CalendarTests(unittest.TestCase):
         html = yt.render_calendar(shown, {"long": 0, "short": 0}, "채널", NOW, 0, notes)
         self.assertIn('"plan": [', html)
 
+    def test_video_list_lines(self):
+        lines = yt.video_list_lines(self.vids(), KST, 180, "short")
+        self.assertEqual(lines[0], "1. 2026-11-11 21:00 | 예약 | 쇼츠 예약 </script>")
+        self.assertEqual(len(lines), 4)
+        self.assertTrue(any("| 공개 | 공개된 쇼츠" in l for l in lines))
+        self.assertEqual(len(yt.video_list_lines(self.vids(), KST, 180, "long")), 2)
+
     def test_render_escapes_script(self):
         events, undated = yt.calendar_events(self.vids(), KST, 180)
         html = yt.render_calendar(events, undated, "운동과 건강함", NOW)

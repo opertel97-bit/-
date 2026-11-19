@@ -903,6 +903,38 @@ def cmd_apply(cfg, args):
                save=lambda rs: save_plan(rs, plan_path), backup_dir=BASE / "backups", confirm=confirm)
 
 
+# ---------------------------------------------------------------- 명령: list (영상 제목 목록)
+
+PRIVACY_KO = {"public": "공개", "private": "비공개", "unlisted": "일부공개"}
+
+
+def video_list_lines(videos: dict, tz: ZoneInfo, max_short: int, kind: str) -> list[str]:
+    rows = []
+    for vid, v in videos.items():
+        st, sn = v.get("status", {}), v.get("snippet", {})
+        is_short = iso_duration_seconds(v.get("contentDetails", {}).get("duration", "")) <= max_short
+        if (kind == "short") != is_short:
+            continue
+        when = st.get("publishAt") or sn.get("publishedAt") or ""
+        state = "예약" if st.get("publishAt") and st.get("privacyStatus") != "public" else PRIVACY_KO.get(st.get("privacyStatus", ""), "")
+        rows.append((when, state, sn.get("title", ""), vid))
+    rows.sort(key=lambda r: r[0], reverse=True)
+    return [f"{i}. {fmt_local(parse_api_time(w), tz) if w else '-'} | {s} | {t}" for i, (w, s, t, _) in enumerate(rows, 1)]
+
+
+def cmd_list(cfg, args):
+    tz = tz_of(cfg)
+    yt = get_service(cfg, interactive=True)
+    _, videos = all_my_videos(yt, cfg)
+    resolve(cfg, "plan_file").with_name("videos_cache.json").write_text(json.dumps(videos, ensure_ascii=False, indent=1), encoding="utf-8")
+    kind = "long" if args.long else "short"
+    lines = video_list_lines(videos, tz, int(cfg["shorts_max_seconds"]), kind)
+    out = resolve(cfg, "plan_file").with_name(f"{'longform' if kind == 'long' else 'shorts'}_list.txt")
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"{'롱폼' if kind == 'long' else '쇼츠'} {len(lines)}개 (최신순) → {out.name}")
+    open_in_notepad(out)
+
+
 # ---------------------------------------------------------------- 명령: reschedule (달력에서 옮긴 일정을 유튜브 예약에 반영)
 
 RESCHEDULE_FILE = "reschedule.txt"
@@ -1878,6 +1910,9 @@ def main(argv=None):
     v = sub.add_parser("verify", help="반영 결과 확인")
     v.add_argument("--only", help="이 video_id 들만 (쉼표 구분)")
 
+    ls = sub.add_parser("list", help="쇼츠(기본) 또는 롱폼 제목 전체를 최신순으로 메모장에")
+    ls.add_argument("--long", action="store_true", help="롱폼 목록")
+
     rs = sub.add_parser("reschedule", help="달력에서 옮긴 일정을 유튜브 예약에 한 번에 반영 (확인 후)")
     rs.add_argument("--yes", action="store_true", help="확인 질문 생략")
 
@@ -1917,7 +1952,7 @@ def main(argv=None):
     handler = {
         "auth": cmd_auth, "fetch": cmd_fetch, "generate": cmd_generate, "schedule": cmd_schedule,
         "check": cmd_check, "apply": cmd_apply, "verify": cmd_verify, "linklist": cmd_linklist,
-        "export": cmd_export, "import": cmd_import, "calendar": cmd_calendar, "reschedule": cmd_reschedule, "comment": cmd_comment, "replies": cmd_replies, "transcript": cmd_transcript,
+        "export": cmd_export, "import": cmd_import, "calendar": cmd_calendar, "reschedule": cmd_reschedule, "list": cmd_list, "comment": cmd_comment, "replies": cmd_replies, "transcript": cmd_transcript,
     }[args.cmd]
     try:
         handler(cfg, args)
