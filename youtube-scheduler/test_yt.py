@@ -369,6 +369,12 @@ class CalendarTests(unittest.TestCase):
         self.assertTrue(any("아무말" in w for w in warns))                   # 잘못 적은 줄
         self.assertTrue(any("11/26" in w and "롱폼 2개" in w for w in warns))  # 같은 날 롱폼 2개
         self.assertEqual(len([e for e in events if e.get("plan")]), 0)        # 원본은 그대로
+        tray = [{"id": "PARK1", "title": "무릎 (박용택 원장 1부)", "who": "박용택 원장 1부", "kind": "long", "state": "unscheduled", "date": "", "time": ""}]
+        linked, notes2 = yt.apply_calendar_plan(events, "추가|11/22 20:00|박용택 원장 1부\n추가|11/26|박용택 원장 2부", date(2026, 11, 19), tray)
+        park = [e for e in linked if e.get("plan") == "new"]
+        self.assertEqual([(e["id"], e["date"], e.get("unsched")) for e in park], [("PARK1", "2026-11-22", True), ("", "2026-11-26", None)])
+        self.assertEqual(tray, [])  # 연결된 영상은 '예약 안 된 롱폼' 칸에서 빠짐
+        self.assertTrue(any("빈 블록" in n["text"] for n in notes2 if n["level"] == "warn"))
         html = yt.render_calendar(shown, {"long": 0, "short": 0}, "채널", NOW, 0, notes)
         self.assertIn('"plan": [', html)
 

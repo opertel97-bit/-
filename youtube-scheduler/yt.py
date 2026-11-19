@@ -1130,8 +1130,9 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
 
 
-def apply_calendar_plan(events: list[dict], plan_text: str, today: date) -> tuple[list[dict], list[dict]]:
-    """calendar_plan.txt 의 '추가' · '이동' 을 달력 이벤트에 덧그림. 실제 예약은 바꾸지 않음."""
+def apply_calendar_plan(events: list[dict], plan_text: str, today: date, tray: list[dict] | None = None) -> tuple[list[dict], list[dict]]:
+    """calendar_plan.txt 의 '추가' · '이동' 을 달력 이벤트에 덧그림. 실제 예약은 바꾸지 않음.
+    '추가' 이름표가 예약 안 된 롱폼(tray)과 같으면 그 영상에 연결하고 tray 에서 뺌 (reschedule 로 바로 반영 가능)."""
     notes: list[dict] = []
     events = [dict(e) for e in events]
     adds, moves = [], []
@@ -1176,8 +1177,14 @@ def apply_calendar_plan(events: list[dict], plan_text: str, today: date) -> tupl
         if any(e["kind"] == "long" and not e.get("plan") and e["date"] == d and _norm(name) in _norm(e.get("who") or e["title"]) for e in events):
             notes.append({"level": "ok", "text": f"{md(d)} {name}: 이미 예약돼 있어요"})
             continue
+        match = [e for e in (tray or []) if _norm(name) and _norm(name) == _norm(e.get("who"))]
+        if len(match) == 1:
+            tray.remove(match[0])
+            events.append(dict(match[0], state="scheduled", date=d, time=t, plan="new", unsched=True))
+            notes.append({"level": "ok", "text": f"{md(d)} {t} {name} 추가 (업로드된 영상과 연결됨)"})
+            continue
         events.append({"id": "", "title": name, "who": name, "kind": "long", "state": "scheduled", "date": d, "time": t, "plan": "new"})
-        notes.append({"level": "ok", "text": f"{md(d)} {t} {name} 추가"})
+        notes.append({"level": "warn", "text": f"{md(d)} {t} {name}: 업로드된 '예약 안 된 롱폼' 중 같은 이름이 없어 빈 블록으로만 표시해요 (예약 반영 안 됨)"})
     per_day: dict[str, list[dict]] = {}
     for e in events:
         if e["kind"] == "long" and e["state"] == "scheduled" and e.get("plan") != "ghost":
@@ -1221,15 +1228,15 @@ def write_calendar(cfg, videos: dict, channel_title: str, refresh: int = 0, verb
     events, undated = calendar_events(videos, tz, int(cfg["shorts_max_seconds"]))
     plan_path = resolve(cfg, "plan_file").with_name(CALENDAR_PLAN_FILE)
     notes = None
+    tray = unscheduled_longs(videos, int(cfg["shorts_max_seconds"]))
     if plan_path.exists():
-        shown, notes = apply_calendar_plan(events, plan_path.read_text(encoding="utf-8-sig"), datetime.now(tz).date())
+        shown, notes = apply_calendar_plan(events, plan_path.read_text(encoding="utf-8-sig"), datetime.now(tz).date(), tray)
         if verbose:
             warns = [n["text"] for n in notes if n["level"] == "warn"]
             print(f"일정 계획({plan_path.name}) 반영 · 확인할 점 {len(warns)}개")
             for w in warns:
                 print(f"  ⚠ {w}")
     out = resolve(cfg, "plan_file").with_name(CALENDAR_FILE)
-    tray = unscheduled_longs(videos, int(cfg["shorts_max_seconds"]))
     out.write_text(render_calendar(shown if notes is not None else events, undated, channel_title, datetime.now(tz), refresh, notes, tray), encoding="utf-8")
     scheduled = [e for e in events if e["state"] == "scheduled"]
     longs = sum(1 for e in scheduled if e["kind"] == "long")

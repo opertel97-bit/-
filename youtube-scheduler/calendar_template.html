@@ -209,40 +209,36 @@ const saveDrag = () => { try { localStorage.setItem(DRAG_KEY, JSON.stringify(dra
 const keyOf = ev => (ev.id ? ev.id : `new:${ev.who}`);
 const mdOf = iso => `${+iso.slice(5, 7)}/${+iso.slice(8, 10)}`;
 const pool = () => [...DATA.events, ...(DATA.tray || [])];
-const changed = ev => {
-  const d = drag[keyOf(ev)];
-  if (!d || ev.plan === "ghost") return null;
-  if (ev.state === "unscheduled") return d.date ? d : null;
-  if (ev.state !== "scheduled") return null;
-  return (d.date && d.date !== ev.date) || (d.time && d.time !== ev.time) ? d : null;
+// 실제 유튜브 예약(actual)과 달력에 보이는 최종 자리(final)를 비교해서 바뀐 것만 '옮김' 으로 표시
+const actualOf = ev => (ev.state === "unscheduled" || ev.unsched || !ev.id ? null : ev.plan === "moved" ? ev.src : ev.date);
+const finalOf = ev => {
+  const d = drag[keyOf(ev)] || {};
+  return { date: d.date || (ev.state === "unscheduled" ? "" : ev.date), time: d.time || ev.time || "20:00" };
 };
 function currentEvents() {
   const out = [];
   for (const ev of pool()) {
-    const d = changed(ev);
-    if (ev.state === "unscheduled") {
-      if (d) out.push({ ...ev, state: "scheduled", date: d.date, time: d.time || "20:00", plan: "new", dragged: true });
-      continue;
-    }
-    if (!d) { out.push(ev); continue; }
-    const to = d.date || ev.date, time = d.time || ev.time;
-    if (ev.plan === "new" || ev.plan === "moved" || to === ev.date) { out.push({ ...ev, date: to, time, dragged: true }); continue; }
-    out.push({ ...ev, plan: "ghost", to });
-    out.push({ ...ev, date: to, time, plan: "moved", src: ev.date, dragged: true });
+    if (ev.plan === "ghost") continue;
+    if (ev.state === "published") { out.push(ev); continue; }
+    const f = finalOf(ev);
+    if (!f.date) continue;  // 아직 달력에 놓지 않은 '예약 안 된 롱폼'
+    const act = actualOf(ev);
+    const base = { ...ev, state: "scheduled", date: f.date, time: f.time, plan: undefined, src: undefined, to: undefined };
+    if (act === null) { out.push({ ...base, plan: "new" }); continue; }
+    if (f.date === act && f.time === ev.time) { out.push(base); continue; }
+    if (f.date !== act) out.push({ ...ev, date: act, plan: "ghost", to: f.date });
+    out.push({ ...base, plan: "moved", src: act, srcTime: ev.time });
   }
   return out;
 }
-function draggedList() {
-  return pool().filter(ev => changed(ev)).map(ev => {
-    const d = changed(ev);
-    return { ev, to: d.date || ev.date, time: d.time || ev.time || "20:00", from: ev.state === "unscheduled" ? "" : (ev.plan === "moved" ? ev.src : ev.date) };
-  });
-}
+const changes = () => currentEvents().filter(e => e.plan === "moved" || e.plan === "new")
+  .map(e => ({ ev: e, to: e.date, time: e.time, from: e.plan === "moved" ? `${e.src} ${e.srcTime}` : "" }));
+const changed = ev => (drag[keyOf(ev)] && drag[keyOf(ev)].date ? drag[keyOf(ev)] : null);
 
 function renderTray() {
   const box = document.getElementById("tray");
   box.innerHTML = "";
-  const left = (DATA.tray || []).filter(ev => !changed(ev));
+  const left = (DATA.tray || []).filter(ev => !changed(ev));  // 서버 계획으로 연결된 것은 이미 tray 에서 빠져 있음
   if (!left.length) { box.hidden = true; return; }
   box.hidden = false;
   box.append(el("h3", "", `예약 안 된 롱폼 ${left.length}개 · 날짜 칸으로 끌어다 놓으세요 (기본 20:00)`));
@@ -261,32 +257,33 @@ function renderTray() {
 function renderPlan() {
   const box = document.getElementById("plan");
   box.innerHTML = "";
-  const moved = draggedList();
-  if (!DATA.plan && !moved.length) { box.hidden = true; return; }
+  const moved = changes();
+  if (!DATA.plan && !moved.length && !Object.keys(drag).length) { box.hidden = true; return; }
   box.hidden = false;
   const notes = DATA.plan || [];
   const warns = notes.filter(n => n.level === "warn");
   const evs = currentEvents();
   const clash = {};
   for (const e of evs) if (e.kind === "long" && e.state === "scheduled" && e.plan !== "ghost") (clash[e.date] ||= []).push(e);
-  const clashDays = Object.keys(clash).filter(d => clash[d].length > 1 && clash[d].some(e => e.dragged)).sort();
-  box.append(el("h3", "", `일정 계획 미리보기 · 확인할 점 ${warns.length + clashDays.length}개`));
+  const clashDays = Object.keys(clash).filter(d => clash[d].length > 1).sort();
+  box.append(el("h3", "", `바뀔 예약 ${moved.length}개 · 확인할 점 ${warns.length + clashDays.length}개`));
   const ul = el("ul");
   for (const d of clashDays) ul.append(el("li", "warn", `⚠ ${mdOf(d)} 에 롱폼 ${clash[d].length}개: ${clash[d].map(e => e.who || e.title.slice(0, 20)).join(", ")}`));
   for (const n of warns) ul.append(el("li", "warn", "⚠ " + n.text));
-  for (const m of moved) ul.append(el("li", "", `✋ ${m.from ? mdOf(m.from) : "예약 없음"} → ${mdOf(m.to)} ${m.time} ${m.ev.who || m.ev.title.slice(0, 30)}`));
-  for (const n of notes.filter(n => n.level !== "warn")) ul.append(el("li", n.level, "✓ " + n.text));
+  const fromTxt = m => (m.from ? `${mdOf(m.from)} ${m.from.slice(11)}` : "예약 없음");
+  for (const m of [...moved].sort((a, b) => (a.to + a.time).localeCompare(b.to + b.time)))
+    ul.append(el("li", m.ev.id ? "" : "warn", `${m.ev.id ? "→" : "⚠"} ${m.ev.who || m.ev.title.slice(0, 30)}: ${fromTxt(m)} → ${mdOf(m.to)} ${m.time}${m.ev.id ? "" : "  (영상과 연결 안 된 블록 · 예약에 반영 안 됨)"}`));
   box.append(ul);
   box.append(el("div", "legend", "빨간 칸 = 새로 넣을 영상 · 파란 점선 = 옮길 자리 · 흐린 줄 = 옮기기 전 자리 · 노란 칸 = 롱폼이 2개 이상인 날. 유튜브 예약은 아직 그대로예요."));
-  if (moved.length) {
+  if (moved.length || Object.keys(drag).length) {
     const btns = el("div", "btns");
-    const reset = el("button", "", "끌어서 옮긴 것 모두 되돌리기");
+    const reset = el("button", "", "끌어서 옮긴 것 되돌리기");
     reset.onclick = () => { drag = {}; saveDrag(); renderAll(); };
     const copy = el("button", "", "옮긴 내용 복사 (reschedule 용)");
     copy.onclick = () => {
       const real = moved.filter(m => m.ev.id), fake = moved.filter(m => !m.ev.id);
-      const text = ["# 달력에서 옮긴 일정 → cmd 에서 python yt.py reschedule",
-        ...moved.map(m => `# ${m.from ? mdOf(m.from) : "예약 없음"} → ${mdOf(m.to)} ${m.time}  ${m.ev.who || m.ev.title}${m.ev.id ? "" : "  (업로드 전 블록이라 반영 안 됨)"}`),
+      const text = ["# 달력에서 바꾼 예약 → cmd 에서 python yt.py reschedule",
+        ...fake.map(m => `# (반영 안 됨: 영상과 연결 안 된 블록) ${m.ev.who || m.ev.title} → ${mdOf(m.to)} ${m.time}`),
         ...real.map(m => `${m.ev.id}|${m.to} ${m.time}|${m.ev.who || m.ev.title.slice(0, 40)}`)].join("\n");
       (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(
         () => { copy.textContent = "복사됨!"; setTimeout(() => (copy.textContent = "옮긴 내용 복사 (reschedule 용)"), 1500); },
