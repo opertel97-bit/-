@@ -796,6 +796,56 @@ class ReplyBatchTests(unittest.TestCase):
             self.assertEqual((Path(d) / "transcript_DJPMelNUU-w.txt").read_text(encoding="utf-8"), "# 롱폼\nko 자막\n")
 
 
+class TranscriptBatchTests(unittest.TestCase):
+    SRT = ("1\n00:00:01,000 --> 00:00:03,000\n안녕하세요\n\n2\n00:00:03,000 --> 00:00:05,000\n안녕하세요\n오늘은\n\n"
+           "3\n00:00:25,000 --> 00:00:27,000\n암 이야기\n\n4\n01:02:03,000 --> 01:02:05,000\n<c>마무리</c>\n")
+
+    def test_paragraphs(self):
+        self.assertEqual(yt.srt_to_paragraphs(self.SRT),
+                         "[00:01] 안녕하세요 오늘은\n[00:25] 암 이야기\n[1:02:03] 마무리")
+
+    def test_scheduled_batch(self):
+        def v(title, privacy, at=None, dur="PT20M"):
+            st = {"privacyStatus": privacy}
+            if at:
+                st["publishAt"] = at
+            return {"snippet": {"title": title}, "status": st, "contentDetails": {"duration": dur}}
+        vids = {
+            "K4AAAAAAAAA": v("암 (강형창 원장 특집)", "private", "2026-12-06T11:00:00Z"),
+            "P1AAAAAAAAA": v("무릎 (박용택 원장 1부)", "private", "2026-11-22T11:00:00Z"),
+            "NOCAPAAAAAA": v("자막 없음 (임정민 원장 4부)", "private", "2026-12-08T11:00:00Z"),
+            "PUBAAAAAAAA": v("공개됨 (임정민 원장 1부)", "public"),
+            "DRAFTAAAAAA": v("초안 (박용택 원장 2부)", "unlisted"),
+            "SHORTAAAAAA": v("쇼츠", "private", "2026-11-23T11:00:00Z", "PT40S"),
+        }
+        calls = []
+        srt = self.SRT
+
+        class Fake:
+            def captions(self):
+                def lst(part, videoId):
+                    calls.append(videoId)
+                    items = [] if videoId == "NOCAPAAAAAA" else [{"id": "c-" + videoId, "snippet": {"language": "ko", "trackKind": "asr"}}]
+                    return SimpleNamespace(execute=lambda: {"items": items})
+                return SimpleNamespace(list=lst, download_media=lambda id, tfmt: SimpleNamespace(execute=lambda: srt.encode()))
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = {"plan_file": str(Path(d) / "plan.csv"), "timezone": "Asia/Seoul", "shorts_max_seconds": 180}
+            orig = yt.all_my_videos
+            yt.all_my_videos = lambda y, c: ("채널", vids)
+            try:
+                with redirect_stdout(io.StringIO()):
+                    saved = yt.transcript_scheduled(cfg, SimpleNamespace(), yt=Fake())
+                    again = yt.transcript_scheduled(cfg, SimpleNamespace(), yt=Fake())
+            finally:
+                yt.all_my_videos = orig
+            self.assertEqual([p.name for p in saved], ["2026-11-22_박용택 원장 1부_P1AAAAAAAAA.txt", "2026-12-06_강형창 원장 특집_K4AAAAAAAAA.txt"])
+            self.assertIn("[00:25] 암 이야기", saved[0].read_text(encoding="utf-8"))
+            self.assertIn("공개 예정: 2026-11-22 20:00", saved[0].read_text(encoding="utf-8"))
+            self.assertEqual(again, [])  # 이미 받은 건 다시 안 받음 (자막 없던 영상만 다시 시도)
+            self.assertEqual(calls.count("NOCAPAAAAAA"), 2)
+
+
 class ReplyAutoTests(unittest.TestCase):
     def test_auto_with_nothing_pending_does_not_login_or_create_file(self):
         with tempfile.TemporaryDirectory() as d:

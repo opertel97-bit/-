@@ -1766,25 +1766,123 @@ def srt_to_text(srt: str) -> str:
     return "\n".join(out)
 
 
-def cmd_transcript(cfg, args):
-    vid = video_id_from(args.video)
-    yt = get_service(cfg, need_comments=True)
+QUOTA_CAPTIONS = 250  # captions.list 50 + captions.download 200 (영상 1개당)
+
+
+def srt_to_paragraphs(srt: str, every: int = 20) -> str:
+    """SRT → '[03:15] 문장…' 단락 (약 every 초마다 새 단락). 자동 자막의 반복 줄은 뺌."""
+    paras, cur, start, last = [], [], None, None
+    for block in re.split(r"\n\s*\n", srt.replace("\r", "")):
+        lines = [l.strip() for l in block.strip().splitlines() if l.strip()]
+        times = [l for l in lines if "-->" in l]
+        if not times:
+            continue
+        m = re.match(r"(\d+):(\d+):(\d+)", times[0])
+        if not m:
+            continue
+        sec = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+        for text in lines[lines.index(times[0]) + 1:]:
+            text = re.sub(r"<[^>]+>", "", text).strip()
+            if not text or text == last:
+                continue
+            last = text
+            if start is None or sec - start >= every:
+                if cur:
+                    paras.append((start, " ".join(cur)))
+                cur, start = [], sec
+            cur.append(text)
+    if cur:
+        paras.append((start, " ".join(cur)))
+    stamp = lambda t: f"{t // 3600}:{t % 3600 // 60:02d}:{t % 60:02d}" if t >= 3600 else f"{t // 60:02d}:{t % 60:02d}"
+    return "\n".join(f"[{stamp(t)}] {txt}" for t, txt in paras)
+
+
+def download_captions(yt, vid: str) -> str:
     tracks = yt.captions().list(part="snippet", videoId=vid).execute().get("items", [])
     if not tracks:
-        raise UserError("이 영상에 자막이 없습니다. 스튜디오 → 자막에서 자동 자막이 만들어졌는지 확인해주세요.")
+        raise UserError("자막 없음 (자동 자막이 아직 안 만들어졌을 수 있어요)")
     # 한국어 · 직접 올린 자막 우선, 없으면 자동 자막
     tracks.sort(key=lambda t: (t["snippet"].get("language", "") != "ko", t["snippet"].get("trackKind") == "asr"))
-    title = get_videos(yt, [vid]).get(vid, {}).get("snippet", {}).get("title", vid)
     try:
         data = yt.captions().download_media(id=tracks[0]["id"], tfmt="srt").execute()
     except Exception as e:
         reason, msg = api_error_text(e)
-        raise UserError(f"자막을 받지 못했습니다 ({reason or msg}). 스튜디오 → 해당 영상 → 자막 → 점 3개 → 다운로드(.srt) 로 받아 내용을 붙여넣어 주세요.")
-    text = srt_to_text(data.decode("utf-8", "replace") if isinstance(data, bytes) else str(data))
+        raise UserError(f"자막을 받지 못함 ({reason or msg})")
+    return data.decode("utf-8", "replace") if isinstance(data, bytes) else str(data)
+
+
+def safe_filename(text: str) -> str:
+    return re.sub(r'[\\/:*?"<>|\r\n]+', " ", text).strip()[:80] or "영상"
+
+
+def cmd_transcript(cfg, args):
+    if getattr(args, "scheduled", False):
+        return transcript_scheduled(cfg, args)
+    if not args.video:
+        raise UserError("영상 주소를 넣거나, 예약된 롱폼 전부는 --scheduled 를 붙여주세요.")
+    vid = video_id_from(args.video)
+    yt = get_service(cfg, need_comments=True)
+    title = get_videos(yt, [vid]).get(vid, {}).get("snippet", {}).get("title", vid)
+    try:
+        srt = download_captions(yt, vid)
+    except UserError as e:
+        raise UserError(f"{e}. 스튜디오 → 해당 영상 → 자막 → 점 3개 → 다운로드(.srt) 로 받아 내용을 붙여넣어 주세요.")
+    text = srt_to_paragraphs(srt) if getattr(args, "times", False) else srt_to_text(srt)
     out = resolve(cfg, "plan_file").with_name(f"transcript_{vid}.txt")
     out.write_text(f"# {title}\n{text}\n", encoding="utf-8")
     print(f"자막 {len(text)}자 → {out.name}")
     open_in_notepad(out)
+
+
+def transcript_scheduled(cfg, args, yt=None) -> list[Path]:
+    """예약된(공개 전) 롱폼 자막을 transcripts 폴더에 '날짜_출연자.txt' 로 한꺼번에 저장. 이미 받은 영상은 건너뜀."""
+    tz = tz_of(cfg)
+    yt = yt or get_service(cfg, need_comments=True)
+    _, videos = all_my_videos(yt, cfg)
+    max_short = int(cfg["shorts_max_seconds"])
+    todo = []
+    for vid, v in videos.items():
+        st, sn = v.get("status", {}), v.get("snippet", {})
+        if st.get("privacyStatus") == "public" or not st.get("publishAt"):
+            continue
+        if iso_duration_seconds(v.get("contentDetails", {}).get("duration", "")) <= max_short:
+            continue
+        todo.append((parse_api_time(st["publishAt"]), vid, sn.get("title", vid)))
+    todo.sort()
+    folder = resolve(cfg, "plan_file").with_name("transcripts")
+    folder.mkdir(exist_ok=True)
+    have = {p.stem.rsplit("_", 1)[-1] for p in folder.glob("*.txt")}
+    if not getattr(args, "overwrite", False):
+        todo = [t for t in todo if t[1] not in have]
+    if getattr(args, "limit", None):
+        todo = todo[: args.limit]
+    if not todo:
+        print(f"새로 받을 예약 롱폼 자막이 없습니다 (이미 받은 것은 {folder.name} 폴더에 있어요).")
+        return []
+    print(f"예약된 롱폼 {len(todo)}개 자막 받기 · 예상 할당량 {len(todo) * QUOTA_CAPTIONS} / 하루 10,000")
+    saved = []
+    for when, vid, title in todo:
+        name = content_label(title) or title[:30]
+        try:
+            srt = download_captions(yt, vid)
+        except UserError as e:
+            print(f"  ✗ {fmt_local(when, tz)[5:]} {name}: {e}")
+            if "quotaExceeded" in str(e) or "dailyLimitExceeded" in str(e):
+                print("오늘 할당량을 다 썼습니다. 내일 같은 명령을 다시 실행하면 남은 것만 받습니다.")
+                break
+            continue
+        body = srt_to_paragraphs(srt) if not getattr(args, "plain", False) else srt_to_text(srt)
+        path = folder / f"{fmt_local(when, tz)[:10]}_{safe_filename(name)}_{vid}.txt"
+        path.write_text(f"# {title}\n# 공개 예정: {fmt_local(when, tz)} · https://youtu.be/{vid}\n\n{body}\n", encoding="utf-8")
+        saved.append(path)
+        print(f"  ✓ {fmt_local(when, tz)[5:]} {name}  ({len(body)}자)")
+    print(f"\n{len(saved)}개 저장 → {folder}")
+    if saved and sys.platform == "win32":
+        try:
+            os.startfile(str(folder))
+        except OSError:
+            pass
+    return saved
 
 
 # ---------------------------------------------------------------- 명령: export / import (Claude 대화창과 주고받기, 무료)
@@ -1932,8 +2030,13 @@ def main(argv=None):
     rp.add_argument("--delay", type=float, default=4, help="답글 사이 간격(초), 기본 4")
     rp.add_argument("--auto", action="store_true", help="작업 스케줄러용: 확인 질문 · 로그인 창 · 메모장 없이 실행")
 
-    tr = sub.add_parser("transcript", help="내 영상 자막을 텍스트로 받기 (답글 근거용)")
-    tr.add_argument("video", help="영상 주소 또는 ID")
+    tr = sub.add_parser("transcript", help="내 영상 자막을 텍스트로 받기 (답글 근거용) · --scheduled 로 예약 롱폼 전부")
+    tr.add_argument("video", nargs="?", help="영상 주소 또는 ID")
+    tr.add_argument("--scheduled", action="store_true", help="예약된 롱폼 자막을 transcripts 폴더에 한꺼번에 (시간 표시 포함)")
+    tr.add_argument("--times", action="store_true", help="영상 하나 받을 때도 [03:15] 시간 표시")
+    tr.add_argument("--plain", action="store_true", help="--scheduled 때 시간 표시 없이 글만")
+    tr.add_argument("--overwrite", action="store_true", help="이미 받은 영상도 다시 받기")
+    tr.add_argument("--limit", type=int, help="이번에 받을 최대 개수")
 
     cm = sub.add_parser("comment", help="공개된 예약 쇼츠에 채널 댓글 달기 (기본은 미리보기)")
     cm.add_argument("--execute", action="store_true", help="실제로 댓글 달기")
