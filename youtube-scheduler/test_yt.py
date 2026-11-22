@@ -670,6 +670,22 @@ class CommentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(yt.run_longform_comments(None, Path(d) / "x.txt", True)["posted"], 0)
 
+    def test_studio_scheduled_shorts_are_included(self):
+        def v(title, dur, **st):
+            return {"snippet": {"title": title, "publishedAt": st.pop("pub", "2026-10-01T00:00:00Z")}, "status": st, "contentDetails": {"duration": dur}}
+        rows = [row("A", publish_at="2026-11-05 08:00")]
+        cache = {
+            "A": v("이미 plan.csv 에 있음", "PT40S", privacyStatus="private", publishAt="2026-11-04T23:00:00Z"),
+            "S1": v("스튜디오 예약 쇼츠", "PT40S", privacyStatus="private", publishAt="2026-11-05T00:00:00Z"),
+            "S2": v("아직 미래", "PT40S", privacyStatus="private", publishAt="2026-11-06T09:00:00Z"),
+            "L1": v("롱폼", "PT20M", privacyStatus="private", publishAt="2026-11-05T09:00:00Z"),
+        }
+        recent = {"S3": v("검색으로 찾은 공개 쇼츠", "PT50S", privacyStatus="public", pub="2026-11-05T01:00:00Z"),
+                  "OLD": v("오래된 쇼츠", "PT50S", privacyStatus="public", pub="2026-10-01T01:00:00Z")}
+        extra = yt.extra_short_rows(rows, cache, recent, KST, NOW, 3, 180)
+        self.assertEqual({r["video_id"]: r["publish_at"] for r in extra}, {"S1": "2026-11-05 09:00", "S3": "2026-11-05 10:00"})
+        self.assertTrue(all(r["is_short"] == "Y" and r["comment"] == "" for r in extra))
+
     def test_scope_check(self):
         self.assertTrue(yt.has_scopes([yt.SCOPE_MANAGE], need_comments=False))
         self.assertFalse(yt.has_scopes([yt.SCOPE_MANAGE], need_comments=True))

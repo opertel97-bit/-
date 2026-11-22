@@ -1418,6 +1418,37 @@ def channel_commented(yt, video_id: str, channel_id: str) -> bool:
     return False
 
 
+def extra_short_rows(rows: list[dict], cache: dict, recent: dict, tz: ZoneInfo, now: datetime, days: int, max_short: int) -> list[dict]:
+    """plan.csv 에 없는 쇼츠(스튜디오에서 직접 예약한 것)도 자동 댓글 대상으로.
+    cache: videos_cache.json (예약 시간 기억), recent: 방금 받은 최근 공개 영상들."""
+    have = {r["video_id"] for r in rows}
+    out = {}
+    for src in (cache, recent):
+        for vid, v in src.items():
+            if vid in have or vid in out:
+                continue
+            st, sn = v.get("status", {}), v.get("snippet", {})
+            if iso_duration_seconds(v.get("contentDetails", {}).get("duration", "")) > max_short:
+                continue
+            when = st.get("publishAt") or (sn.get("publishedAt") if st.get("privacyStatus") == "public" else None)
+            if not when:
+                continue
+            t = parse_api_time(when)
+            if not (now - timedelta(days=days) <= t <= now):
+                continue
+            row = {c: "" for c in COLUMNS}
+            row.update(video_id=vid, current_title=sn.get("title", ""), is_short="Y", publish_at=fmt_local(t, tz))
+            out[vid] = row
+    return list(out.values())
+
+
+def recent_public_videos(yt, max_results: int = 25) -> dict:
+    """최근 공개된 내 영상 (검색 1회 · 할당량 100). 스튜디오에서 예약한 쇼츠를 놓치지 않기 위함."""
+    resp = yt.search().list(part="id", forMine=True, type="video", order="date", maxResults=max_results).execute()
+    ids = [it["id"]["videoId"] for it in resp.get("items", []) if it.get("id", {}).get("videoId")]
+    return get_videos(yt, ids) if ids else {}
+
+
 def run_comments(yt, rows, tz, now, days, texts, execute) -> dict:
     stats = {"posted": 0, "failed": 0, "waiting": 0, "done": 0}
     cands = comment_candidates(rows, tz, now, days)
@@ -1560,8 +1591,21 @@ def cmd_comment(cfg, args):
     rows = load_plan(resolve(cfg, "plan_file"))
     texts = cfg.get("comment", {}).get("texts") or DEFAULT_COMMENTS
     yt = get_service(cfg, interactive=not args.auto, need_comments=True)
-    print(f"[{datetime.now(tz):%Y-%m-%d %H:%M}] 공개된 쇼츠 댓글 확인")
-    run_comments(yt, rows, tz, datetime.now(tz), args.days, texts, args.execute)
+    now = datetime.now(tz)
+    print(f"[{now:%Y-%m-%d %H:%M}] 공개된 쇼츠 댓글 확인")
+    cache_path = resolve(cfg, "plan_file").with_name("videos_cache.json")
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.exists() else {}
+    except ValueError:
+        cache = {}
+    try:
+        recent = recent_public_videos(yt)
+    except Exception as e:  # 검색이 막혀도 plan.csv · 캐시만으로 계속
+        reason, msg = api_error_text(e)
+        print(f"  ※ 최근 공개 영상 확인 실패 ({reason or msg}) · 예약 목록 기준으로만 확인합니다")
+        recent = {}
+    extra = extra_short_rows(rows, cache, recent, tz, now, args.days, int(cfg["shorts_max_seconds"]))
+    run_comments(yt, rows + extra, tz, now, args.days, texts, args.execute)
     run_longform_comments(yt, long_file, args.execute)
 
 
